@@ -6,6 +6,8 @@ import {
   User,
   MessageSquare, 
   LogOut, 
+  List,
+  Grid,
   Menu, 
   X,
   Bell,
@@ -129,6 +131,7 @@ export default function App() {
   const [users, setUsers] = useState<any[]>([]);
   const [isImporting, setIsImporting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteModal, setDeleteModal] = useState({ show: false, type: '' });
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '', error: null as string | null });
   const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
   
@@ -234,17 +237,22 @@ export default function App() {
               sanitizedRawData[sanitizeKey(key)] = row[key];
             });
 
-            const snapshot: any = {
-              type: type,
-              referenceMonth: month,
-              importDate: new Date().toISOString(),
-              rawData: sanitizedRawData,
-              importedBy: user?.uid || "anonymous",
-              worksite: String(row.Obra || row.worksite || row.OBRA || row.Local || "Geral"),
-              contractorName: String(row.Empresa || row.contractor || row.EMPRESA || row.Nome || row.Razão || "Sem Nome"),
-              cnpj: String(row.CNPJ || row.cnpj || row.Cnpj || ""),
-              status: String(row.Status || row.status || row.STATUS || "PENDENTE").toUpperCase(),
-            };
+              const getVal = (row: any, keys: string[]) => {
+                const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
+                return foundKey ? row[foundKey] : null;
+              };
+
+              const snapshot: any = {
+                type: type,
+                referenceMonth: month,
+                importDate: new Date().toISOString(),
+                rawData: sanitizedRawData,
+                importedBy: user?.uid || "anonymous",
+                worksite: String(getVal(row, ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']) || "Geral"),
+                contractorName: String(getVal(row, ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO']) || "Sem Nome"),
+                cnpj: String(getVal(row, ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR']) || ""),
+                status: String(getVal(row, ['STATUS', 'SITUAÇÃO', 'ESTADO']) || "PENDENTE").toUpperCase(),
+              };
             
             const docRef = doc(collection(db, 'snapshots'));
             batch.set(docRef, snapshot);
@@ -278,10 +286,7 @@ export default function App() {
   };
 
   const handleDeleteSnapshots = async () => {
-    if (!window.confirm(`ATENÇÃO: Isso excluirá TODOS os registros de ${snapshotType === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'} do mês ${selectedMonth}. Esta ação não pode ser desfeita. Deseja continuar?`)) {
-      return;
-    }
-
+    setDeleteModal({ show: false, type: '' });
     setIsDeleting(true);
     setImportProgress({ current: 0, total: currentSnapshots.length, status: 'Iniciando exclusão...', error: null });
 
@@ -489,6 +494,45 @@ export default function App() {
         </header>
 
         <div className="p-8 max-w-7xl mx-auto">
+          {/* Delete Confirmation Modal */}
+          <AnimatePresence>
+            {deleteModal.show && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-8"
+                >
+                  <div className="w-16 h-16 bg-red-50 rounded-2xl flex items-center justify-center mb-6">
+                    <AlertTriangle className="text-red-600 w-8 h-8" />
+                  </div>
+                  <h3 className="text-2xl font-bold text-gray-900 mb-2">Confirmar Exclusão</h3>
+                  <p className="text-gray-500 mb-6">
+                    Você está prestes a excluir <strong>{currentSnapshots.length}</strong> registros de <strong>{deleteModal.type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'}</strong> do mês <strong>{selectedMonth}</strong>.
+                    <br /><br />
+                    <span className="text-red-600 font-bold">Esta ação é irreversível.</span>
+                  </p>
+                  <div className="flex gap-3">
+                    <Button 
+                      variant="secondary" 
+                      className="flex-1" 
+                      onClick={() => setDeleteModal({ show: false, type: '' })}
+                    >
+                      Cancelar
+                    </Button>
+                    <Button 
+                      className="flex-1 bg-red-600 hover:bg-red-700 text-white" 
+                      onClick={handleDeleteSnapshots}
+                    >
+                      Sim, Excluir Tudo
+                    </Button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
           {/* Import Confirmation Modal */}
           <AnimatePresence>
             {importModal.show && (
@@ -593,42 +637,44 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-8"
               >
-                <div className="flex justify-between items-center -mb-6">
-                  <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
-                    <button 
-                      onClick={() => setDashboardConfig(prev => ({ ...prev, showStats: !prev.showStats }))}
-                      className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap ${dashboardConfig.showStats ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}
-                    >
-                      Resumo Geral
-                    </button>
-                    <button 
-                      onClick={() => setDashboardConfig(prev => ({ ...prev, showPie: !prev.showPie }))}
-                      className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap ${dashboardConfig.showPie ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}
-                    >
-                      Gráfico de Status
-                    </button>
-                    <button 
-                      onClick={() => setDashboardConfig(prev => ({ ...prev, showBar: !prev.showBar }))}
-                      className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap ${dashboardConfig.showBar ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}
-                    >
-                      Problemas por Obra
-                    </button>
-                    <button 
-                      onClick={() => setDashboardConfig(prev => ({ ...prev, showCritical: !prev.showCritical }))}
-                      className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap ${dashboardConfig.showCritical ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}
-                    >
-                      Lista Crítica
-                    </button>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="secondary" onClick={() => setDashboardConfig(prev => ({ ...prev, layout: prev.layout === 'grid' ? 'stack' : 'grid' }))}>
-                      {dashboardConfig.layout === 'grid' ? 'Ver em Lista' : 'Ver em Grade'}
-                    </Button>
-                    {isAdmin && (
-                      <Button variant="ghost" className="text-[10px] opacity-10 hover:opacity-100" onClick={seedDatabase}>
-                        Seed Data
+                <div className="flex flex-col gap-6 mb-8">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide w-full md:w-auto">
+                      <button 
+                        onClick={() => setDashboardConfig(prev => ({ ...prev, showStats: !prev.showStats }))}
+                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showStats ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'}`}
+                      >
+                        Resumo Geral
+                      </button>
+                      <button 
+                        onClick={() => setDashboardConfig(prev => ({ ...prev, showPie: !prev.showPie }))}
+                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showPie ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'}`}
+                      >
+                        Gráfico de Status
+                      </button>
+                      <button 
+                        onClick={() => setDashboardConfig(prev => ({ ...prev, showBar: !prev.showBar }))}
+                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showBar ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'}`}
+                      >
+                        Problemas por Obra
+                      </button>
+                      <button 
+                        onClick={() => setDashboardConfig(prev => ({ ...prev, showCritical: !prev.showCritical }))}
+                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showCritical ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'}`}
+                      >
+                        Lista Crítica
+                      </button>
+                    </div>
+                    <div className="flex gap-2 w-full md:w-auto justify-end">
+                      <Button variant="secondary" onClick={() => setDashboardConfig(prev => ({ ...prev, layout: prev.layout === 'grid' ? 'stack' : 'grid' }))}>
+                        {dashboardConfig.layout === 'grid' ? <><List size={16} className="mr-2" /> Lista</> : <><Grid size={16} className="mr-2" /> Grade</>}
                       </Button>
-                    )}
+                      {isAdmin && (
+                        <Button variant="ghost" className="text-[10px] opacity-20 hover:opacity-100" onClick={seedDatabase}>
+                          Seed Data
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
                 {/* Stats Grid */}
@@ -823,7 +869,7 @@ export default function App() {
                         <Button 
                           variant="secondary" 
                           className="bg-red-50 border-red-100 text-red-600 hover:bg-red-100"
-                          onClick={handleDeleteSnapshots}
+                          onClick={() => setDeleteModal({ show: true, type: snapshotType })}
                           disabled={isDeleting || currentSnapshots.length === 0}
                         >
                           <X size={18} /> Limpar Mês
