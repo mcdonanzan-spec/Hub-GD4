@@ -128,8 +128,18 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [users, setUsers] = useState<any[]>([]);
   const [isImporting, setIsImporting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '', error: null as string | null });
   const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
+  
+  // Dashboard Customization State
+  const [dashboardConfig, setDashboardConfig] = useState({
+    showStats: true,
+    showPie: true,
+    showBar: true,
+    showCritical: true,
+    layout: 'grid' as 'grid' | 'stack'
+  });
 
   // Real-time data
   useEffect(() => {
@@ -265,6 +275,37 @@ export default function App() {
       setImportProgress(prev => ({ ...prev, status: 'Erro de leitura', error: "Erro ao ler o arquivo físico do seu computador." }));
     };
     reader.readAsBinaryString(file);
+  };
+
+  const handleDeleteSnapshots = async () => {
+    if (!window.confirm(`ATENÇÃO: Isso excluirá TODOS os registros de ${snapshotType === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'} do mês ${selectedMonth}. Esta ação não pode ser desfeita. Deseja continuar?`)) {
+      return;
+    }
+
+    setIsDeleting(true);
+    setImportProgress({ current: 0, total: currentSnapshots.length, status: 'Iniciando exclusão...', error: null });
+
+    try {
+      const batchSize = 400;
+      for (let i = 0; i < currentSnapshots.length; i += batchSize) {
+        const chunk = currentSnapshots.slice(i, i + batchSize);
+        const batch = writeBatch(db);
+        
+        chunk.forEach(s => {
+          batch.delete(doc(db, 'snapshots', s.id));
+        });
+
+        await batch.commit();
+        setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, currentSnapshots.length), status: `Excluindo registros ${Math.min(i + batchSize, currentSnapshots.length)} de ${currentSnapshots.length}...` }));
+      }
+      alert("Registros excluídos com sucesso!");
+    } catch (error: any) {
+      console.error("Erro ao excluir snapshots:", error);
+      alert("Erro ao excluir registros: " + error.message);
+    } finally {
+      setIsDeleting(false);
+      setImportProgress({ current: 0, total: 0, status: '', error: null });
+    }
   };
 
   const handleLogin = async () => {
@@ -552,118 +593,159 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-8"
               >
-                <div className="flex justify-end -mb-6">
-                  {isAdmin && (
-                    <Button variant="ghost" className="text-[10px] opacity-10 hover:opacity-100" onClick={seedDatabase}>
-                      Seed Data
+                <div className="flex justify-between items-center -mb-6">
+                  <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
+                    <button 
+                      onClick={() => setDashboardConfig(prev => ({ ...prev, showStats: !prev.showStats }))}
+                      className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap ${dashboardConfig.showStats ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}
+                    >
+                      Resumo Geral
+                    </button>
+                    <button 
+                      onClick={() => setDashboardConfig(prev => ({ ...prev, showPie: !prev.showPie }))}
+                      className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap ${dashboardConfig.showPie ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}
+                    >
+                      Gráfico de Status
+                    </button>
+                    <button 
+                      onClick={() => setDashboardConfig(prev => ({ ...prev, showBar: !prev.showBar }))}
+                      className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap ${dashboardConfig.showBar ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}
+                    >
+                      Problemas por Obra
+                    </button>
+                    <button 
+                      onClick={() => setDashboardConfig(prev => ({ ...prev, showCritical: !prev.showCritical }))}
+                      className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap ${dashboardConfig.showCritical ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'}`}
+                    >
+                      Lista Crítica
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button variant="secondary" onClick={() => setDashboardConfig(prev => ({ ...prev, layout: prev.layout === 'grid' ? 'stack' : 'grid' }))}>
+                      {dashboardConfig.layout === 'grid' ? 'Ver em Lista' : 'Ver em Grade'}
                     </Button>
-                  )}
+                    {isAdmin && (
+                      <Button variant="ghost" className="text-[10px] opacity-10 hover:opacity-100" onClick={seedDatabase}>
+                        Seed Data
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 {/* Stats Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                  <StatCard 
-                    title="Total Registros" 
-                    value={totalEmpresas} 
-                    icon={<Users className="text-blue-600" />} 
-                    trend={`${selectedMonth}`}
-                  />
-                  <StatCard 
-                    title="Aptas" 
-                    value={aptas} 
-                    icon={<CheckCircle2 className="text-emerald-600" />} 
-                    color="emerald"
-                  />
-                  <StatCard 
-                    title="Bloqueadas" 
-                    value={bloqueadas} 
-                    icon={<AlertTriangle className="text-red-600" />} 
-                    color="red"
-                  />
-                  <StatCard 
-                    title="Pendentes" 
-                    value={pendentes} 
-                    icon={<Clock className="text-amber-600" />} 
-                    color="amber"
-                  />
-                </div>
+                {dashboardConfig.showStats && (
+                  <div className={`grid gap-6 ${dashboardConfig.layout === 'grid' ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4' : 'grid-cols-1'}`}>
+                    <StatCard 
+                      title="Total Registros" 
+                      value={totalEmpresas} 
+                      icon={<Users className="text-blue-600" />} 
+                      trend={`${selectedMonth}`}
+                    />
+                    <StatCard 
+                      title="Aptas" 
+                      value={aptas} 
+                      icon={<CheckCircle2 className="text-emerald-600" />} 
+                      color="emerald"
+                    />
+                    <StatCard 
+                      title="Bloqueadas" 
+                      value={bloqueadas} 
+                      icon={<AlertTriangle className="text-red-600" />} 
+                      color="red"
+                    />
+                    <StatCard 
+                      title="Pendentes" 
+                      value={pendentes} 
+                      icon={<Clock className="text-amber-600" />} 
+                      color="amber"
+                    />
+                  </div>
+                )}
 
                 {/* Charts Section */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  <Card className="p-6">
-                    <h3 className="text-lg font-semibold mb-6">Status Geral ({snapshotType === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'})</h3>
-                    <div className="h-64">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={[
-                              { name: 'Apto', value: aptas },
-                              { name: 'Bloqueado', value: bloqueadas },
-                              { name: 'Pendente', value: pendentes },
-                            ]}
-                            innerRadius={60}
-                            outerRadius={80}
-                            paddingAngle={5}
-                            dataKey="value"
-                          >
-                            <Cell fill="#10b981" />
-                            <Cell fill="#ef4444" />
-                            <Cell fill="#f59e0b" />
-                          </Pie>
-                          <Tooltip />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </Card>
+                {(dashboardConfig.showPie || dashboardConfig.showBar) && (
+                  <div className={`grid gap-8 ${dashboardConfig.layout === 'grid' ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
+                    {dashboardConfig.showPie && (
+                      <Card className="p-6">
+                        <h3 className="text-lg font-semibold mb-6">Status Geral ({snapshotType === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'})</h3>
+                        <div className="h-64">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie
+                                data={[
+                                  { name: 'Apto', value: aptas },
+                                  { name: 'Bloqueado', value: bloqueadas },
+                                  { name: 'Pendente', value: pendentes },
+                                ]}
+                                innerRadius={60}
+                                outerRadius={80}
+                                paddingAngle={5}
+                                dataKey="value"
+                              >
+                                <Cell fill="#10b981" />
+                                <Cell fill="#ef4444" />
+                                <Cell fill="#f59e0b" />
+                              </Pie>
+                              <Tooltip />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </Card>
+                    )}
 
-                  <Card className="p-6">
-                    <h3 className="text-lg font-semibold mb-6">Problemas por Obra</h3>
-                    <div className="h-64">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={getIssuesByWorksite(currentSnapshots)}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
-                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
-                          <Tooltip cursor={{ fill: '#f8fafc' }} />
-                          <Bar dataKey="issues" fill="#1e293b" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </Card>
-                </div>
+                    {dashboardConfig.showBar && (
+                      <Card className="p-6">
+                        <h3 className="text-lg font-semibold mb-6">Problemas por Obra</h3>
+                        <div className="h-64">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={getIssuesByWorksite(currentSnapshots)}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
+                              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
+                              <Tooltip cursor={{ fill: '#f8fafc' }} />
+                              <Bar dataKey="issues" fill="#1e293b" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </Card>
+                    )}
+                  </div>
+                )}
 
                 {/* Critical List */}
-                <Card>
-                  <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-                    <h3 className="text-lg font-semibold">Registros Críticos</h3>
-                    <Button variant="secondary" className="text-sm">Ver Todos</Button>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left">
-                      <thead>
-                        <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                          <th className="px-6 py-4 font-medium">Entidade</th>
-                          <th className="px-6 py-4 font-medium">Obra</th>
-                          <th className="px-6 py-4 font-medium">Status</th>
-                          <th className="px-6 py-4 font-medium"></th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {currentSnapshots.filter(s => s.status !== 'APTO').slice(0, 5).map(s => (
-                          <tr key={s.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="px-6 py-4 font-medium text-gray-900">{s.contractorName}</td>
-                            <td className="px-6 py-4 text-gray-500 text-sm">{s.worksite}</td>
-                            <td className="px-6 py-4"><Badge status={s.status as any} /></td>
-                            <td className="px-6 py-4 text-right">
-                              <button className="p-2 hover:bg-gray-200 rounded-lg text-gray-400">
-                                <MoreVertical size={16} />
-                              </button>
-                            </td>
+                {dashboardConfig.showCritical && (
+                  <Card>
+                    <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+                      <h3 className="text-lg font-semibold">Registros Críticos</h3>
+                      <Button variant="secondary" className="text-sm">Ver Todos</Button>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+                            <th className="px-6 py-4 font-medium">Entidade</th>
+                            <th className="px-6 py-4 font-medium">Obra</th>
+                            <th className="px-6 py-4 font-medium">Status</th>
+                            <th className="px-6 py-4 font-medium"></th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </Card>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {currentSnapshots.filter(s => s.status !== 'APTO').slice(0, 5).map(s => (
+                            <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                              <td className="px-6 py-4 font-medium text-gray-900">{s.contractorName}</td>
+                              <td className="px-6 py-4 text-gray-500 text-sm">{s.worksite}</td>
+                              <td className="px-6 py-4"><Badge status={s.status as any} /></td>
+                              <td className="px-6 py-4 text-right">
+                                <button className="p-2 hover:bg-gray-200 rounded-lg text-gray-400">
+                                  <MoreVertical size={16} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                )}
               </motion.div>
             )}
 
@@ -738,6 +820,14 @@ export default function App() {
                     <Button variant="secondary"><Filter size={18} /> Filtros</Button>
                     {isEditor && (
                       <div className="flex gap-2">
+                        <Button 
+                          variant="secondary" 
+                          className="bg-red-50 border-red-100 text-red-600 hover:bg-red-100"
+                          onClick={handleDeleteSnapshots}
+                          disabled={isDeleting || currentSnapshots.length === 0}
+                        >
+                          <X size={18} /> Limpar Mês
+                        </Button>
                         <div className="relative">
                           <input 
                             type="file" 
