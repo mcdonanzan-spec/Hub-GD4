@@ -63,28 +63,21 @@ service cloud.firestore {
     // Domain Validators
     // ===============================================================
 
-    function isValidContractor(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
-             data.status in ['APTO', 'BLOQUEADO', 'PENDENTE'] &&
-             data.worksite is string && data.worksite.size() > 0;
-    }
-
-    function isValidAppointment(data) {
-      return data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
-             isValidDateString(data.date) &&
-             data.type in ['VISITA', 'REUNIAO', 'REGULARIZACAO', 'AUDITORIA'] &&
-             data.status in ['PLANEJADO', 'REALIZADO', 'CANCELADO'] &&
-             data.createdBy is string;
+    function isValidSnapshot(data) {
+      return data.type in ['COMPANY_DOCS', 'EMPLOYEE_DOCS'] &&
+             data.referenceMonth is string && data.referenceMonth.matches("^\\d{4}-\\d{2}$") &&
+             data.rawData is map &&
+             data.importedBy == request.auth.uid;
     }
 
     // ===============================================================
     // Rules
     // ===============================================================
 
-    match /contractors/{contractorId} {
+    match /snapshots/{snapshotId} {
       allow read: if isAuthenticated();
-      allow create, update: if isEditor();
-      allow delete: if isAdmin();
+      allow create: if isEditor() && isValidSnapshot(request.resource.data);
+      allow update, delete: if isAdmin();
     }
 
     match /appointments/{appointmentId} {

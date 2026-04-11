@@ -3,6 +3,7 @@ import {
   LayoutDashboard, 
   Calendar as CalendarIcon, 
   Users, 
+  User,
   MessageSquare, 
   LogOut, 
   Menu, 
@@ -42,15 +43,20 @@ import { useAuth } from './AuthContext';
 import { getAIAssistance, suggestTasks } from './services/aiService';
 import ReactMarkdown from 'react-markdown';
 import { seedDatabase } from './seed';
+import * as XLSX from 'xlsx';
 
 // --- Types ---
-interface Contractor {
+interface Snapshot {
   id: string;
-  name: string;
-  status: 'APTO' | 'BLOQUEADO' | 'PENDENTE';
-  worksite: string;
+  type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS';
+  referenceMonth: string;
+  importDate: string;
+  worksite?: string;
+  contractorName?: string;
   cnpj?: string;
-  criticalIssues?: number;
+  status?: string;
+  rawData: any;
+  importedBy: string;
 }
 
 interface Appointment {
@@ -113,22 +119,25 @@ export default function App() {
   const { user, loading, isAdmin, isEditor } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [contractors, setContractors] = useState<Contractor[]>([]);
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [aiContext, setAiContext] = useState<string>("");
+  const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [snapshotType, setSnapshotType] = useState<'COMPANY_DOCS' | 'EMPLOYEE_DOCS'>('COMPANY_DOCS');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiMessages, setAiMessages] = useState<{role: 'user' | 'ai', content: string}[]>([]);
   const [prompt, setPrompt] = useState("");
   const [users, setUsers] = useState<any[]>([]);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
 
   // Real-time data
   useEffect(() => {
     if (!user) return;
 
-    const qContractors = query(collection(db, 'contractors'), orderBy('name'));
-    const unsubContractors = onSnapshot(qContractors, (snapshot) => {
-      setContractors(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Contractor)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'contractors'));
+    const qSnapshots = query(collection(db, 'snapshots'), orderBy('importDate', 'desc'));
+    const unsubSnapshots = onSnapshot(qSnapshots, (snapshot) => {
+      setSnapshots(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Snapshot)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'snapshots'));
 
     const qAppointments = query(collection(db, 'appointments'), orderBy('date'));
     const unsubAppointments = onSnapshot(qAppointments, (snapshot) => {
@@ -141,14 +150,14 @@ export default function App() {
         setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'));
       return () => {
-        unsubContractors();
+        unsubSnapshots();
         unsubAppointments();
         unsubUsers();
       };
     }
 
     return () => {
-      unsubContractors();
+      unsubSnapshots();
       unsubAppointments();
     };
   }, [user, isAdmin]);
@@ -161,6 +170,72 @@ export default function App() {
     }
   };
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const month = window.prompt("Confirme o mês de referência (AAAA-MM):", selectedMonth);
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      alert("Mês inválido. Use o formato AAAA-MM.");
+      return;
+    }
+
+    setIsImporting(true);
+    setImportProgress({ current: 0, total: 0 });
+    
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws);
+
+        if (!Array.isArray(data) || data.length === 0) {
+          throw new Error("Planilha vazia ou formato inválido.");
+        }
+
+        setImportProgress({ current: 0, total: data.length });
+
+        // Process in chunks to avoid UI freeze and handle large files better
+        const chunkSize = 20;
+        for (let i = 0; i < data.length; i += chunkSize) {
+          const chunk = data.slice(i, i + chunkSize);
+          await Promise.all(chunk.map(async (row: any) => {
+            const snapshot: any = {
+              type: type,
+              referenceMonth: month,
+              importDate: new Date().toISOString(),
+              rawData: row,
+              importedBy: user?.uid,
+              worksite: row.Obra || row.worksite || row.OBRA || "Geral",
+              contractorName: row.Empresa || row.contractor || row.EMPRESA || row.Nome || "Sem Nome",
+              cnpj: row.CNPJ || row.cnpj || "",
+              status: String(row.Status || row.status || row.STATUS || "PENDENTE").toUpperCase(),
+            };
+            return addDoc(collection(db, 'snapshots'), snapshot);
+          }));
+          setImportProgress(prev => ({ ...prev, current: Math.min(i + chunkSize, data.length) }));
+        }
+
+        alert(`Importação de ${type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'} concluída com sucesso!`);
+      } catch (error) {
+        console.error("Erro ao importar planilha:", error);
+        alert("Erro ao processar a planilha: " + (error instanceof Error ? error.message : "Erro desconhecido"));
+      } finally {
+        setIsImporting(false);
+        setImportProgress({ current: 0, total: 0 });
+        if (e.target) e.target.value = "";
+      }
+    };
+    reader.onerror = () => {
+      alert("Erro ao ler o arquivo.");
+      setIsImporting(false);
+    };
+    reader.readAsBinaryString(file);
+  };
+
   const handleLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
@@ -171,6 +246,20 @@ export default function App() {
 
   const handleLogout = () => signOut(auth);
 
+  const currentSnapshots = snapshots.filter(s => s.referenceMonth === selectedMonth && s.type === snapshotType);
+  const totalEmpresas = currentSnapshots.length;
+  const aptas = currentSnapshots.filter(s => s.status === 'APTO').length;
+  const bloqueadas = currentSnapshots.filter(s => s.status === 'BLOQUEADO').length;
+  const pendentes = currentSnapshots.filter(s => s.status === 'PENDENTE').length;
+
+  const getIssuesByWorksite = (data: Snapshot[]) => {
+    const worksites = Array.from(new Set(data.map(s => s.worksite)));
+    return worksites.map(ws => ({
+      name: ws,
+      issues: data.filter(s => s.worksite === ws && (s.status === 'BLOQUEADO' || s.status === 'PENDENTE')).length
+    }));
+  };
+
   const handleSendMessage = async () => {
     if (!prompt.trim()) return;
     
@@ -180,7 +269,7 @@ export default function App() {
     setIsAiLoading(true);
 
     const context = {
-      contractors: contractors.map(c => ({ name: c.name, status: c.status, worksite: c.worksite })),
+      snapshots: currentSnapshots.map(s => ({ name: s.contractorName, status: s.status, worksite: s.worksite, type: s.type })),
       appointments: appointments.slice(0, 5).map(a => ({ title: a.title, date: a.date, type: a.type }))
     };
 
@@ -291,8 +380,29 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto">
-        <header className="bg-white/80 backdrop-blur-md border-bottom border-gray-200 sticky top-0 z-20 px-8 py-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-gray-900 capitalize">{activeTab}</h2>
+        <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 sticky top-0 z-20 px-8 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-6">
+            <h2 className="text-xl font-semibold text-gray-900 capitalize">{activeTab}</h2>
+            {(activeTab === 'dashboard' || activeTab === 'contractors') && (
+              <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-xl border border-gray-200">
+                <input 
+                  type="month" 
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  className="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer"
+                />
+                <div className="h-4 w-px bg-gray-300 mx-1" />
+                <select 
+                  value={snapshotType}
+                  onChange={(e) => setSnapshotType(e.target.value as any)}
+                  className="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer"
+                >
+                  <option value="COMPANY_DOCS">Empresas</option>
+                  <option value="EMPLOYEE_DOCS">Colaboradores</option>
+                </select>
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-4">
             <button className="p-2 text-gray-500 hover:bg-gray-100 rounded-full relative">
               <Bell size={20} />
@@ -307,6 +417,44 @@ export default function App() {
         </header>
 
         <div className="p-8 max-w-7xl mx-auto">
+          {isImporting && (
+            <motion.div 
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-8"
+            >
+              <Card className="p-6 border-blue-100 bg-blue-50/30">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white animate-pulse">
+                      <Plus size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-blue-900">Processando Planilha...</h3>
+                      <p className="text-sm text-blue-600">Enviando dados para o sistema de forma segura.</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-2xl font-black text-blue-900">
+                      {Math.round((importProgress.current / importProgress.total) * 100)}%
+                    </span>
+                    <p className="text-xs text-blue-500 font-medium uppercase tracking-wider">
+                      {importProgress.current} de {importProgress.total} linhas
+                    </p>
+                  </div>
+                </div>
+                <div className="h-3 bg-blue-100 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-blue-600"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${(importProgress.current / importProgress.total) * 100}%` }}
+                    transition={{ type: "spring", bounce: 0, duration: 0.5 }}
+                  />
+                </div>
+              </Card>
+            </motion.div>
+          )}
+
           <AnimatePresence mode="wait">
             {activeTab === 'dashboard' && (
               <motion.div 
@@ -326,26 +474,26 @@ export default function App() {
                 {/* Stats Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                   <StatCard 
-                    title="Total Empresas" 
-                    value={contractors.length} 
+                    title="Total Registros" 
+                    value={totalEmpresas} 
                     icon={<Users className="text-blue-600" />} 
-                    trend="+2 este mês"
+                    trend={`${selectedMonth}`}
                   />
                   <StatCard 
                     title="Aptas" 
-                    value={contractors.filter(c => c.status === 'APTO').length} 
+                    value={aptas} 
                     icon={<CheckCircle2 className="text-emerald-600" />} 
                     color="emerald"
                   />
                   <StatCard 
                     title="Bloqueadas" 
-                    value={contractors.filter(c => c.status === 'BLOQUEADO').length} 
+                    value={bloqueadas} 
                     icon={<AlertTriangle className="text-red-600" />} 
                     color="red"
                   />
                   <StatCard 
                     title="Pendentes" 
-                    value={contractors.filter(c => c.status === 'PENDENTE').length} 
+                    value={pendentes} 
                     icon={<Clock className="text-amber-600" />} 
                     color="amber"
                   />
@@ -354,15 +502,15 @@ export default function App() {
                 {/* Charts Section */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   <Card className="p-6">
-                    <h3 className="text-lg font-semibold mb-6">Status Geral</h3>
+                    <h3 className="text-lg font-semibold mb-6">Status Geral ({snapshotType === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'})</h3>
                     <div className="h-64">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie
                             data={[
-                              { name: 'Apto', value: contractors.filter(c => c.status === 'APTO').length },
-                              { name: 'Bloqueado', value: contractors.filter(c => c.status === 'BLOQUEADO').length },
-                              { name: 'Pendente', value: contractors.filter(c => c.status === 'PENDENTE').length },
+                              { name: 'Apto', value: aptas },
+                              { name: 'Bloqueado', value: bloqueadas },
+                              { name: 'Pendente', value: pendentes },
                             ]}
                             innerRadius={60}
                             outerRadius={80}
@@ -383,7 +531,7 @@ export default function App() {
                     <h3 className="text-lg font-semibold mb-6">Problemas por Obra</h3>
                     <div className="h-64">
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={getIssuesByWorksite(contractors)}>
+                        <BarChart data={getIssuesByWorksite(currentSnapshots)}>
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                           <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
                           <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
@@ -398,27 +546,25 @@ export default function App() {
                 {/* Critical List */}
                 <Card>
                   <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-                    <h3 className="text-lg font-semibold">Empresas Críticas</h3>
-                    <Button variant="secondary" className="text-sm">Ver Todas</Button>
+                    <h3 className="text-lg font-semibold">Registros Críticos</h3>
+                    <Button variant="secondary" className="text-sm">Ver Todos</Button>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left">
                       <thead>
                         <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                          <th className="px-6 py-4 font-medium">Empresa</th>
+                          <th className="px-6 py-4 font-medium">Entidade</th>
                           <th className="px-6 py-4 font-medium">Obra</th>
                           <th className="px-6 py-4 font-medium">Status</th>
-                          <th className="px-6 py-4 font-medium">Pendências</th>
                           <th className="px-6 py-4 font-medium"></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
-                        {contractors.filter(c => c.status !== 'APTO').slice(0, 5).map(c => (
-                          <tr key={c.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="px-6 py-4 font-medium text-gray-900">{c.name}</td>
-                            <td className="px-6 py-4 text-gray-500 text-sm">{c.worksite}</td>
-                            <td className="px-6 py-4"><Badge status={c.status} /></td>
-                            <td className="px-6 py-4 text-gray-500 text-sm">{c.criticalIssues || 0} críticas</td>
+                        {currentSnapshots.filter(s => s.status !== 'APTO').slice(0, 5).map(s => (
+                          <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                            <td className="px-6 py-4 font-medium text-gray-900">{s.contractorName}</td>
+                            <td className="px-6 py-4 text-gray-500 text-sm">{s.worksite}</td>
+                            <td className="px-6 py-4"><Badge status={s.status as any} /></td>
                             <td className="px-6 py-4 text-right">
                               <button className="p-2 hover:bg-gray-200 rounded-lg text-gray-400">
                                 <MoreVertical size={16} />
@@ -502,25 +648,52 @@ export default function App() {
                   </div>
                   <div className="flex gap-2 w-full md:w-auto">
                     <Button variant="secondary"><Filter size={18} /> Filtros</Button>
-                    {isEditor && <Button><Plus size={18} /> Nova Empresa</Button>}
+                    {isEditor && (
+                      <div className="flex gap-2">
+                        <div className="relative">
+                          <input 
+                            type="file" 
+                            accept=".xlsx, .xls, .csv" 
+                            onChange={(e) => handleFileUpload(e, 'COMPANY_DOCS')}
+                            className="absolute inset-0 opacity-0 cursor-pointer"
+                            disabled={isImporting}
+                          />
+                          <Button variant="secondary" disabled={isImporting}>
+                            <Plus size={18} /> {isImporting ? '...' : 'Subir Empresas'}
+                          </Button>
+                        </div>
+                        <div className="relative">
+                          <input 
+                            type="file" 
+                            accept=".xlsx, .xls, .csv" 
+                            onChange={(e) => handleFileUpload(e, 'EMPLOYEE_DOCS')}
+                            className="absolute inset-0 opacity-0 cursor-pointer"
+                            disabled={isImporting}
+                          />
+                          <Button variant="secondary" disabled={isImporting}>
+                            <Plus size={18} /> {isImporting ? '...' : 'Subir Colaboradores'}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {contractors.map(c => (
-                    <Card key={c.id} className="p-6 hover:border-gray-300 transition-all cursor-pointer group">
+                  {currentSnapshots.map(s => (
+                    <Card key={s.id} className="p-6 hover:border-gray-300 transition-all cursor-pointer group">
                       <div className="flex justify-between items-start mb-4">
                         <div className="w-12 h-12 bg-gray-50 rounded-xl flex items-center justify-center group-hover:bg-gray-900 group-hover:text-white transition-colors">
-                          <Users size={24} />
+                          {s.type === 'COMPANY_DOCS' ? <Users size={24} /> : <User size={24} />}
                         </div>
-                        <Badge status={c.status} />
+                        <Badge status={s.status as any} />
                       </div>
-                      <h4 className="font-bold text-lg mb-1">{c.name}</h4>
-                      <p className="text-sm text-gray-500 mb-4">{c.worksite}</p>
+                      <h4 className="font-bold text-lg mb-1">{s.contractorName}</h4>
+                      <p className="text-sm text-gray-500 mb-4">{s.worksite}</p>
                       <div className="pt-4 border-t border-gray-50 flex items-center justify-between">
-                        <span className="text-xs text-gray-400">CNPJ: {c.cnpj || '---'}</span>
+                        <span className="text-xs text-gray-400">CNPJ: {s.cnpj || '---'}</span>
                         <button className="text-gray-900 font-semibold text-sm flex items-center gap-1">
-                          Detalhes <ChevronRight size={16} />
+                          Ver Dados <ChevronRight size={16} />
                         </button>
                       </div>
                     </Card>
@@ -774,11 +947,12 @@ function Calendar({ appointments }: { appointments: Appointment[] }) {
 
 // --- Helpers ---
 
-function getIssuesByWorksite(contractors: Contractor[]) {
+function getIssuesByWorksite(data: Snapshot[]) {
   const worksites: any = {};
-  contractors.forEach(c => {
-    if (!worksites[c.worksite]) worksites[c.worksite] = 0;
-    if (c.status !== 'APTO') worksites[c.worksite] += (c.criticalIssues || 1);
+  data.forEach(s => {
+    const ws = s.worksite || 'Geral';
+    if (!worksites[ws]) worksites[ws] = 0;
+    if (s.status !== 'APTO') worksites[ws] += 1;
   });
   return Object.keys(worksites).map(name => ({ name, issues: worksites[name] }));
 }

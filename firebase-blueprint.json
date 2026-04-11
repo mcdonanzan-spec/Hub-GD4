@@ -1,20 +1,22 @@
 {
   "entities": {
-    "Contractor": {
-      "title": "Contractor",
-      "description": "Empresa empreiteira cadastrada no sistema.",
+    "DataSnapshot": {
+      "title": "DataSnapshot",
+      "description": "Registro de importação de planilha (Empresas ou Colaboradores) com dados brutos.",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "name": { "type": "string" },
-        "status": { "type": "string", "enum": ["APTO", "BLOQUEADO", "PENDENTE"] },
+        "type": { "type": "string", "enum": ["COMPANY_DOCS", "EMPLOYEE_DOCS"] },
+        "referenceMonth": { "type": "string", "description": "Formato YYYY-MM" },
+        "importDate": { "type": "string", "format": "date-time" },
         "worksite": { "type": "string" },
+        "contractorName": { "type": "string" },
         "cnpj": { "type": "string" },
-        "lastAuditDate": { "type": "string", "format": "date-time" },
-        "nextAuditDate": { "type": "string", "format": "date-time" },
-        "criticalIssues": { "type": "number" }
+        "rawData": { "type": "object", "description": "Objeto contendo todas as colunas da planilha" },
+        "status": { "type": "string" },
+        "importedBy": { "type": "string" }
       },
-      "required": ["name", "status", "worksite"]
+      "required": ["type", "referenceMonth", "importDate", "rawData", "importedBy"]
     },
     "Appointment": {
       "title": "Appointment",
@@ -35,9 +37,9 @@
     }
   },
   "firestore": {
-    "/contractors/{contractorId}": {
-      "schema": "Contractor",
-      "description": "Coleção de empreiteiras."
+    "/snapshots/{snapshotId}": {
+      "schema": "DataSnapshot",
+      "description": "Coleção de dados históricos importados das planilhas GD4."
     },
     "/appointments/{appointmentId}": {
       "schema": "Appointment",
