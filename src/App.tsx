@@ -38,7 +38,7 @@ import { format, startOfWeek, addDays, startOfMonth, endOfMonth, eachDayOfInterv
 import { ptBR } from 'date-fns/locale';
 import { auth, db, googleProvider, OperationType, handleFirestoreError } from './firebase';
 import { signInWithPopup, signOut } from 'firebase/auth';
-import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc, deleteDoc } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { useAuth } from './AuthContext';
 import { getAIAssistance, suggestTasks } from './services/aiService';
 import ReactMarkdown from 'react-markdown';
@@ -210,42 +210,47 @@ export default function App() {
         // Helper to sanitize keys for Firestore (no dots, slashes, etc)
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
 
-        const chunkSize = 5; // Even smaller chunks for maximum reliability
-        for (let i = 0; i < data.length; i += chunkSize) {
-          const chunk = data.slice(i, i + chunkSize);
-          setImportProgress(prev => ({ ...prev, status: `Enviando registros ${i + 1} a ${Math.min(i + chunkSize, data.length)}...` }));
+        const batchSize = 400; // Firestore limit is 500, using 400 for safety
+        for (let i = 0; i < data.length; i += batchSize) {
+          const chunk = data.slice(i, i + batchSize);
+          setImportProgress(prev => ({ ...prev, status: `Enviando lote ${Math.floor(i / batchSize) + 1} de ${Math.ceil(data.length / batchSize)}...` }));
           
-          try {
-            await Promise.all(chunk.map(async (row: any) => {
-              // Sanitize all keys in the row object
-              const sanitizedRawData: any = {};
-              Object.keys(row).forEach(key => {
-                sanitizedRawData[sanitizeKey(key)] = row[key];
-              });
+          const batch = writeBatch(db);
+          
+          chunk.forEach((row: any) => {
+            // Sanitize all keys in the row object
+            const sanitizedRawData: any = {};
+            Object.keys(row).forEach(key => {
+              sanitizedRawData[sanitizeKey(key)] = row[key];
+            });
 
-              const snapshot: any = {
-                type: type,
-                referenceMonth: month,
-                importDate: new Date().toISOString(),
-                rawData: sanitizedRawData,
-                importedBy: user?.uid || "anonymous",
-                worksite: String(row.Obra || row.worksite || row.OBRA || row.Local || "Geral"),
-                contractorName: String(row.Empresa || row.contractor || row.EMPRESA || row.Nome || row.Razão || "Sem Nome"),
-                cnpj: String(row.CNPJ || row.cnpj || row.Cnpj || ""),
-                status: String(row.Status || row.status || row.STATUS || "PENDENTE").toUpperCase(),
-              };
-              
-              return addDoc(collection(db, 'snapshots'), snapshot);
-            }));
+            const snapshot: any = {
+              type: type,
+              referenceMonth: month,
+              importDate: new Date().toISOString(),
+              rawData: sanitizedRawData,
+              importedBy: user?.uid || "anonymous",
+              worksite: String(row.Obra || row.worksite || row.OBRA || row.Local || "Geral"),
+              contractorName: String(row.Empresa || row.contractor || row.EMPRESA || row.Nome || row.Razão || "Sem Nome"),
+              cnpj: String(row.CNPJ || row.cnpj || row.Cnpj || ""),
+              status: String(row.Status || row.status || row.STATUS || "PENDENTE").toUpperCase(),
+            };
+            
+            const docRef = doc(collection(db, 'snapshots'));
+            batch.set(docRef, snapshot);
+          });
+
+          try {
+            await batch.commit();
           } catch (batchErr: any) {
-            console.error("Erro no lote de envio:", batchErr);
-            throw new Error(`Erro ao enviar dados para o servidor: ${batchErr.message || "Verifique sua conexão ou permissões."}`);
+            console.error("Erro ao processar lote:", batchErr);
+            throw new Error(`Erro no servidor ao processar lote ${Math.floor(i / batchSize) + 1}: ${batchErr.message}`);
           }
           
-          setImportProgress(prev => ({ ...prev, current: Math.min(i + chunkSize, data.length) }));
+          setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, data.length) }));
         }
 
-        setImportProgress(prev => ({ ...prev, status: 'Concluído com sucesso!' }));
+        setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
         setTimeout(() => {
           setIsImporting(false);
           setImportProgress({ current: 0, total: 0, status: '', error: null });
