@@ -51,7 +51,8 @@ service cloud.firestore {
 
     function isEditor() {
       return isAuthenticated() && 
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']);
+        (isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']));
     }
 
     function isValidDateString(dateStr) {

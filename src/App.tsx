@@ -128,7 +128,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [users, setUsers] = useState<any[]>([]);
   const [isImporting, setIsImporting] = useState(false);
-  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '' });
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '', error: null as string | null });
   const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
 
   // Real-time data
@@ -186,57 +186,61 @@ export default function App() {
     const month = selectedMonth;
     setImportModal({ show: false, type: null, file: null });
     setIsImporting(true);
-    setImportProgress({ current: 0, total: 0, status: 'Lendo arquivo...' });
+    setImportProgress({ current: 0, total: 0, status: 'Lendo arquivo...', error: null });
     
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try {
         const bstr = evt.target?.result;
+        if (!bstr) throw new Error("Não foi possível ler o conteúdo do arquivo.");
+
         const wb = XLSX.read(bstr, { type: 'binary' });
+        if (!wb.SheetNames.length) throw new Error("O arquivo Excel não possui planilhas.");
+
         const wsname = wb.SheetNames[0];
         const ws = wb.Sheets[wsname];
         const data = XLSX.utils.sheet_to_json(ws);
 
         if (!Array.isArray(data) || data.length === 0) {
-          throw new Error("A planilha parece estar vazia ou o formato não é suportado.");
+          throw new Error("A planilha parece estar vazia ou o formato não é suportado (certifique-se de que os dados estão na primeira aba).");
         }
 
-        setImportProgress({ current: 0, total: data.length, status: 'Preparando dados...' });
+        setImportProgress({ current: 0, total: data.length, status: 'Preparando dados...', error: null });
 
         // Helper to sanitize keys for Firestore (no dots, slashes, etc)
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
 
-        const chunkSize = 10; // Smaller chunks for better reliability
+        const chunkSize = 5; // Even smaller chunks for maximum reliability
         for (let i = 0; i < data.length; i += chunkSize) {
           const chunk = data.slice(i, i + chunkSize);
-          setImportProgress(prev => ({ ...prev, status: `Enviando linhas ${i + 1} a ${Math.min(i + chunkSize, data.length)}...` }));
+          setImportProgress(prev => ({ ...prev, status: `Enviando registros ${i + 1} a ${Math.min(i + chunkSize, data.length)}...` }));
           
-          await Promise.all(chunk.map(async (row: any) => {
-            // Sanitize all keys in the row object
-            const sanitizedRawData: any = {};
-            Object.keys(row).forEach(key => {
-              sanitizedRawData[sanitizeKey(key)] = row[key];
-            });
+          try {
+            await Promise.all(chunk.map(async (row: any) => {
+              // Sanitize all keys in the row object
+              const sanitizedRawData: any = {};
+              Object.keys(row).forEach(key => {
+                sanitizedRawData[sanitizeKey(key)] = row[key];
+              });
 
-            const snapshot: any = {
-              type: type,
-              referenceMonth: month,
-              importDate: new Date().toISOString(),
-              rawData: sanitizedRawData,
-              importedBy: user?.uid,
-              worksite: String(row.Obra || row.worksite || row.OBRA || row.Local || "Geral"),
-              contractorName: String(row.Empresa || row.contractor || row.EMPRESA || row.Nome || row.Razão || "Sem Nome"),
-              cnpj: String(row.CNPJ || row.cnpj || row.Cnpj || ""),
-              status: String(row.Status || row.status || row.STATUS || "PENDENTE").toUpperCase(),
-            };
-            
-            try {
-              return await addDoc(collection(db, 'snapshots'), snapshot);
-            } catch (err) {
-              console.error("Erro ao salvar linha:", err, snapshot);
-              throw err;
-            }
-          }));
+              const snapshot: any = {
+                type: type,
+                referenceMonth: month,
+                importDate: new Date().toISOString(),
+                rawData: sanitizedRawData,
+                importedBy: user?.uid || "anonymous",
+                worksite: String(row.Obra || row.worksite || row.OBRA || row.Local || "Geral"),
+                contractorName: String(row.Empresa || row.contractor || row.EMPRESA || row.Nome || row.Razão || "Sem Nome"),
+                cnpj: String(row.CNPJ || row.cnpj || row.Cnpj || ""),
+                status: String(row.Status || row.status || row.STATUS || "PENDENTE").toUpperCase(),
+              };
+              
+              return addDoc(collection(db, 'snapshots'), snapshot);
+            }));
+          } catch (batchErr: any) {
+            console.error("Erro no lote de envio:", batchErr);
+            throw new Error(`Erro ao enviar dados para o servidor: ${batchErr.message || "Verifique sua conexão ou permissões."}`);
+          }
           
           setImportProgress(prev => ({ ...prev, current: Math.min(i + chunkSize, data.length) }));
         }
@@ -244,17 +248,16 @@ export default function App() {
         setImportProgress(prev => ({ ...prev, status: 'Concluído com sucesso!' }));
         setTimeout(() => {
           setIsImporting(false);
-          setImportProgress({ current: 0, total: 0, status: '' });
-        }, 2000);
-      } catch (error) {
+          setImportProgress({ current: 0, total: 0, status: '', error: null });
+        }, 3000);
+      } catch (error: any) {
         console.error("Erro Crítico na Importação:", error);
-        alert("Erro ao processar a planilha: " + (error instanceof Error ? error.message : "Erro desconhecido"));
-        setIsImporting(false);
+        setImportProgress(prev => ({ ...prev, status: 'Erro na importação', error: error.message }));
+        // Don't close immediately so user can see the error
       }
     };
     reader.onerror = (err) => {
-      alert("Erro ao ler o arquivo físico.");
-      setIsImporting(false);
+      setImportProgress(prev => ({ ...prev, status: 'Erro de leitura', error: "Erro ao ler o arquivo físico do seu computador." }));
     };
     reader.readAsBinaryString(file);
   };
@@ -483,34 +486,54 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               className="mb-8"
             >
-              <Card className="p-6 border-blue-100 bg-blue-50/30">
+              <Card className={`p-6 border-2 ${importProgress.error ? 'border-red-200 bg-red-50' : 'border-blue-100 bg-blue-50/30'}`}>
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white animate-pulse">
-                      <Plus size={20} />
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white ${importProgress.error ? 'bg-red-600' : 'bg-blue-600 animate-pulse'}`}>
+                      {importProgress.error ? <AlertTriangle size={20} /> : <Plus size={20} />}
                     </div>
                     <div>
-                      <h3 className="font-bold text-blue-900">{importProgress.status || "Processando Planilha..."}</h3>
-                      <p className="text-sm text-blue-600">Enviando dados para o sistema de forma segura.</p>
+                      <h3 className={`font-bold ${importProgress.error ? 'text-red-900' : 'text-blue-900'}`}>
+                        {importProgress.error ? 'Falha na Importação' : (importProgress.status || "Processando Planilha...")}
+                      </h3>
+                      <p className={`text-sm ${importProgress.error ? 'text-red-600' : 'text-blue-600'}`}>
+                        {importProgress.error ? importProgress.error : 'Enviando dados para o sistema de forma segura.'}
+                      </p>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-2xl font-black text-blue-900">
-                      {Math.round((importProgress.current / importProgress.total) * 100)}%
-                    </span>
-                    <p className="text-xs text-blue-500 font-medium uppercase tracking-wider">
-                      {importProgress.current} de {importProgress.total} linhas
-                    </p>
+                  {!importProgress.error && (
+                    <div className="text-right">
+                      <span className="text-2xl font-black text-blue-900">
+                        {importProgress.total > 0 ? Math.round((importProgress.current / importProgress.total) * 100) : 0}%
+                      </span>
+                      <p className="text-xs text-blue-500 font-medium uppercase tracking-wider">
+                        {importProgress.current} de {importProgress.total} registros
+                      </p>
+                    </div>
+                  )}
+                  {importProgress.error && (
+                    <Button 
+                      variant="secondary" 
+                      className="bg-white border-red-200 text-red-600 hover:bg-red-50"
+                      onClick={() => {
+                        setIsImporting(false);
+                        setImportProgress({ current: 0, total: 0, status: '', error: null });
+                      }}
+                    >
+                      Fechar e Tentar Novamente
+                    </Button>
+                  )}
+                </div>
+                {!importProgress.error && (
+                  <div className="h-3 bg-blue-100 rounded-full overflow-hidden">
+                    <motion.div 
+                      className="h-full bg-blue-600"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}%` }}
+                      transition={{ type: "spring", bounce: 0, duration: 0.5 }}
+                    />
                   </div>
-                </div>
-                <div className="h-3 bg-blue-100 rounded-full overflow-hidden">
-                  <motion.div 
-                    className="h-full bg-blue-600"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${(importProgress.current / importProgress.total) * 100}%` }}
-                    transition={{ type: "spring", bounce: 0, duration: 0.5 }}
-                  />
-                </div>
+                )}
               </Card>
             </motion.div>
           )}
