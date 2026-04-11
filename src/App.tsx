@@ -124,6 +124,7 @@ export default function App() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>('table');
   const [snapshotType, setSnapshotType] = useState<'COMPANY_DOCS' | 'EMPLOYEE_DOCS'>('COMPANY_DOCS');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiMessages, setAiMessages] = useState<{role: 'user' | 'ai', content: string}[]>([]);
@@ -242,16 +243,23 @@ export default function App() {
                 return foundKey ? row[foundKey] : null;
               };
 
+              // Fallback for name: find the first column that looks like a name if mapping fails
+              let contractorName = String(getVal(row, ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR']) || "");
+              if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined") {
+                const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL'].includes(k.toUpperCase()));
+                if (firstStringKey) contractorName = row[firstStringKey];
+              }
+
               const snapshot: any = {
                 type: type,
                 referenceMonth: month,
                 importDate: new Date().toISOString(),
                 rawData: sanitizedRawData,
                 importedBy: user?.uid || "anonymous",
-                worksite: String(getVal(row, ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']) || "Geral"),
-                contractorName: String(getVal(row, ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO']) || "Sem Nome"),
-                cnpj: String(getVal(row, ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR']) || ""),
-                status: String(getVal(row, ['STATUS', 'SITUAÇÃO', 'ESTADO']) || "PENDENTE").toUpperCase(),
+                worksite: String(getVal(row, ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE']) || "Geral"),
+                contractorName: contractorName || "Sem Nome",
+                cnpj: String(getVal(row, ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ']) || ""),
+                status: String(getVal(row, ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO']) || "PENDENTE").toUpperCase(),
               };
             
             const docRef = doc(collection(db, 'snapshots'));
@@ -325,7 +333,11 @@ export default function App() {
 
   const handleLogout = () => signOut(auth);
 
-  const currentSnapshots = snapshots.filter(s => s.referenceMonth === selectedMonth && s.type === snapshotType);
+  const currentSnapshots = snapshots.filter(s => {
+    const monthMatch = selectedMonth === 'ALL' ? true : s.referenceMonth === selectedMonth;
+    const typeMatch = s.type === snapshotType;
+    return monthMatch && typeMatch;
+  });
   const totalEmpresas = currentSnapshots.length;
   const aptas = currentSnapshots.filter(s => s.status === 'APTO').length;
   const bloqueadas = currentSnapshots.filter(s => s.status === 'BLOQUEADO').length;
@@ -463,23 +475,33 @@ export default function App() {
           <div className="flex items-center gap-6">
             <h2 className="text-xl font-semibold text-gray-900 capitalize">{activeTab}</h2>
             {(activeTab === 'dashboard' || activeTab === 'contractors') && (
-              <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-xl border border-gray-200">
-                <input 
-                  type="month" 
-                  value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer"
-                />
-                <div className="h-4 w-px bg-gray-300 mx-1" />
-                <select 
-                  value={snapshotType}
-                  onChange={(e) => setSnapshotType(e.target.value as any)}
-                  className="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer"
-                >
-                  <option value="COMPANY_DOCS">Empresas</option>
-                  <option value="EMPLOYEE_DOCS">Colaboradores</option>
-                </select>
-              </div>
+                <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-xl border border-gray-200">
+                  <div className="relative flex items-center">
+                    <CalendarIcon size={14} className="absolute left-2 text-gray-400 pointer-events-none" />
+                    <select 
+                      value={selectedMonth}
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      className="bg-transparent border-none text-[11px] font-bold focus:ring-0 cursor-pointer pl-7 pr-4 py-1 appearance-none"
+                    >
+                      <option value="ALL">Todos os Períodos</option>
+                      {Array.from(new Set(snapshots.map(s => s.referenceMonth))).sort().reverse().map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                      {!snapshots.some(s => s.referenceMonth === format(new Date(), 'yyyy-MM')) && (
+                        <option value={format(new Date(), 'yyyy-MM')}>{format(new Date(), 'yyyy-MM')}</option>
+                      )}
+                    </select>
+                  </div>
+                  <div className="h-4 w-px bg-gray-300 mx-1" />
+                  <select 
+                    value={snapshotType}
+                    onChange={(e) => setSnapshotType(e.target.value as any)}
+                    className="bg-transparent border-none text-[11px] font-bold focus:ring-0 cursor-pointer"
+                  >
+                    <option value="COMPANY_DOCS">Empresas</option>
+                    <option value="EMPLOYEE_DOCS">Colaboradores</option>
+                  </select>
+                </div>
             )}
           </div>
           <div className="flex items-center gap-4">
@@ -881,6 +903,20 @@ export default function App() {
                     />
                   </div>
                   <div className="flex gap-2 w-full md:w-auto">
+                    <div className="flex bg-gray-100 p-1 rounded-xl">
+                      <button 
+                        onClick={() => setViewMode('table')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center ${viewMode === 'table' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                      >
+                        <List size={14} className="mr-1.5" /> Tabela
+                      </button>
+                      <button 
+                        onClick={() => setViewMode('cards')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center ${viewMode === 'cards' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                      >
+                        <Grid size={14} className="mr-1.5" /> Cards
+                      </button>
+                    </div>
                     <Button variant="secondary"><Filter size={18} /> Filtros</Button>
                     {isEditor && (
                       <div className="flex gap-2">
@@ -921,26 +957,68 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {currentSnapshots.map(s => (
-                    <Card key={s.id} className="p-6 hover:border-gray-300 transition-all cursor-pointer group">
-                      <div className="flex justify-between items-start mb-4">
-                        <div className="w-12 h-12 bg-gray-50 rounded-xl flex items-center justify-center group-hover:bg-gray-900 group-hover:text-white transition-colors">
-                          {s.type === 'COMPANY_DOCS' ? <Users size={24} /> : <User size={24} />}
+                {viewMode === 'cards' ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {currentSnapshots.map(s => (
+                      <Card key={s.id} className="p-6 hover:border-gray-300 transition-all cursor-pointer group">
+                        <div className="flex justify-between items-start mb-4">
+                          <div className="w-12 h-12 bg-gray-50 rounded-xl flex items-center justify-center group-hover:bg-gray-900 group-hover:text-white transition-colors">
+                            {s.type === 'COMPANY_DOCS' ? <Users size={24} /> : <User size={24} />}
+                          </div>
+                          <Badge status={s.status as any} />
                         </div>
-                        <Badge status={s.status as any} />
-                      </div>
-                      <h4 className="font-bold text-lg mb-1">{s.contractorName}</h4>
-                      <p className="text-sm text-gray-500 mb-4">{s.worksite}</p>
-                      <div className="pt-4 border-t border-gray-50 flex items-center justify-between">
-                        <span className="text-xs text-gray-400">CNPJ: {s.cnpj || '---'}</span>
-                        <button className="text-gray-900 font-semibold text-sm flex items-center gap-1">
-                          Ver Dados <ChevronRight size={16} />
-                        </button>
-                      </div>
-                    </Card>
-                  ))}
-                </div>
+                        <h4 className="font-bold text-lg mb-1">{s.contractorName}</h4>
+                        <p className="text-sm text-gray-500 mb-4">{s.worksite}</p>
+                        <div className="pt-4 border-t border-gray-50 flex items-center justify-between">
+                          <span className="text-xs text-gray-400">CNPJ: {s.cnpj || '---'}</span>
+                          <button className="text-gray-900 font-semibold text-sm flex items-center gap-1">
+                            Ver Dados <ChevronRight size={16} />
+                          </button>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <Card className="overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-gray-50 border-b border-gray-100">
+                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
+                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Nome/Empresa</th>
+                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Obra/Local</th>
+                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Mês Ref.</th>
+                            {currentSnapshots.length > 0 && Object.keys(currentSnapshots[0].rawData || {}).slice(0, 6).map(key => (
+                              <th key={key} className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">{key}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-50">
+                          {currentSnapshots.map((s) => (
+                            <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                              <td className="px-6 py-4">
+                                <Badge status={s.status as any} />
+                              </td>
+                              <td className="px-6 py-4 font-medium text-gray-900">{s.contractorName}</td>
+                              <td className="px-6 py-4 text-gray-500 text-sm">{s.worksite}</td>
+                              <td className="px-6 py-4 text-gray-500 text-sm">{s.referenceMonth}</td>
+                              {Object.values(s.rawData || {}).slice(0, 6).map((val: any, i) => (
+                                <td key={i} className="px-6 py-4 text-gray-400 text-xs truncate max-w-[150px]">{String(val)}</td>
+                              ))}
+                            </tr>
+                          ))}
+                          {currentSnapshots.length === 0 && (
+                            <tr>
+                              <td colSpan={10} className="px-6 py-12 text-center text-gray-400">
+                                Nenhum registro encontrado para este filtro.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                )}
               </motion.div>
             )}
 
