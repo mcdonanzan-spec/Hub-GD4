@@ -285,15 +285,17 @@ export default function App() {
     reader.readAsBinaryString(file);
   };
 
-  const handleDeleteSnapshots = async () => {
+  const handleDeleteSnapshots = async (all = false) => {
     setDeleteModal({ show: false, type: '' });
     setIsDeleting(true);
-    setImportProgress({ current: 0, total: currentSnapshots.length, status: 'Iniciando exclusão...', error: null });
+    
+    const targetSnapshots = all ? snapshots : currentSnapshots;
+    setImportProgress({ current: 0, total: targetSnapshots.length, status: all ? 'Iniciando limpeza total...' : 'Iniciando exclusão do mês...', error: null });
 
     try {
       const batchSize = 400;
-      for (let i = 0; i < currentSnapshots.length; i += batchSize) {
-        const chunk = currentSnapshots.slice(i, i + batchSize);
+      for (let i = 0; i < targetSnapshots.length; i += batchSize) {
+        const chunk = targetSnapshots.slice(i, i + batchSize);
         const batch = writeBatch(db);
         
         chunk.forEach(s => {
@@ -301,9 +303,9 @@ export default function App() {
         });
 
         await batch.commit();
-        setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, currentSnapshots.length), status: `Excluindo registros ${Math.min(i + batchSize, currentSnapshots.length)} de ${currentSnapshots.length}...` }));
+        setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, targetSnapshots.length), status: `Excluindo registros ${Math.min(i + batchSize, targetSnapshots.length)} de ${targetSnapshots.length}...` }));
       }
-      alert("Registros excluídos com sucesso!");
+      alert(all ? "TODOS os dados do sistema foram excluídos com sucesso!" : "Registros do mês excluídos com sucesso!");
     } catch (error: any) {
       console.error("Erro ao excluir snapshots:", error);
       alert("Erro ao excluir registros: " + error.message);
@@ -507,25 +509,31 @@ export default function App() {
                   <div className="w-16 h-16 bg-red-50 rounded-2xl flex items-center justify-center mb-6">
                     <AlertTriangle className="text-red-600 w-8 h-8" />
                   </div>
-                  <h3 className="text-2xl font-bold text-gray-900 mb-2">Confirmar Exclusão</h3>
+                  <h3 className="text-2xl font-bold text-gray-900 mb-2">
+                    {deleteModal.type === 'ALL' ? 'Excluir TUDO' : 'Confirmar Exclusão'}
+                  </h3>
                   <p className="text-gray-500 mb-6">
-                    Você está prestes a excluir <strong>{currentSnapshots.length}</strong> registros de <strong>{deleteModal.type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'}</strong> do mês <strong>{selectedMonth}</strong>.
+                    {deleteModal.type === 'ALL' ? (
+                      <>Você está prestes a excluir <strong>TODOS os {snapshots.length} registros</strong> de todo o histórico do sistema.</>
+                    ) : (
+                      <>Você está prestes a excluir <strong>{currentSnapshots.length}</strong> registros de <strong>{deleteModal.type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'}</strong> do mês <strong>{selectedMonth}</strong>.</>
+                    )}
                     <br /><br />
-                    <span className="text-red-600 font-bold">Esta ação é irreversível.</span>
+                    <span className="text-red-600 font-bold">Esta ação é irreversível e apagará os dados permanentemente.</span>
                   </p>
-                  <div className="flex gap-3">
+                  <div className="flex flex-col gap-3">
+                    <Button 
+                      className="w-full bg-red-600 hover:bg-red-700 text-white py-6 text-lg" 
+                      onClick={() => handleDeleteSnapshots(deleteModal.type === 'ALL')}
+                    >
+                      Sim, Excluir Definitivamente
+                    </Button>
                     <Button 
                       variant="secondary" 
-                      className="flex-1" 
+                      className="w-full" 
                       onClick={() => setDeleteModal({ show: false, type: '' })}
                     >
                       Cancelar
-                    </Button>
-                    <Button 
-                      className="flex-1 bg-red-600 hover:bg-red-700 text-white" 
-                      onClick={handleDeleteSnapshots}
-                    >
-                      Sim, Excluir Tudo
                     </Button>
                   </div>
                 </motion.div>
@@ -665,10 +673,20 @@ export default function App() {
                         Lista Crítica
                       </button>
                     </div>
-                    <div className="flex gap-2 w-full md:w-auto justify-end">
+                    <div className="flex gap-2 w-full md:w-auto justify-end items-center">
                       <Button variant="secondary" onClick={() => setDashboardConfig(prev => ({ ...prev, layout: prev.layout === 'grid' ? 'stack' : 'grid' }))}>
                         {dashboardConfig.layout === 'grid' ? <><List size={16} className="mr-2" /> Lista</> : <><Grid size={16} className="mr-2" /> Grade</>}
                       </Button>
+                      {isAdmin && (
+                        <Button 
+                          variant="secondary" 
+                          className="bg-red-50 border-red-100 text-red-600 hover:bg-red-100"
+                          onClick={() => setDeleteModal({ show: true, type: 'ALL' })}
+                          disabled={isDeleting || snapshots.length === 0}
+                        >
+                          <X size={16} className="mr-2" /> Resetar Sistema
+                        </Button>
+                      )}
                       {isAdmin && (
                         <Button variant="ghost" className="text-[10px] opacity-20 hover:opacity-100" onClick={seedDatabase}>
                           Seed Data
