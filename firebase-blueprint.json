@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "Contractor": {
+      "title": "Contractor",
+      "description": "Empresa empreiteira cadastrada no sistema.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["APTO", "BLOQUEADO", "PENDENTE"] },
+        "worksite": { "type": "string" },
+        "cnpj": { "type": "string" },
+        "lastAuditDate": { "type": "string", "format": "date-time" },
+        "nextAuditDate": { "type": "string", "format": "date-time" },
+        "criticalIssues": { "type": "number" }
+      },
+      "required": ["name", "status", "worksite"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Compromisso na agenda digital.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "type": { "type": "string", "enum": ["VISITA", "REUNIAO", "REGULARIZACAO", "AUDITORIA"] },
+        "worksite": { "type": "string" },
+        "contractorId": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["PLANEJADO", "REALIZADO", "CANCELADO"] },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["title", "date", "type", "status", "createdBy"]
+    }
+  },
+  "firestore": {
+    "/contractors/{contractorId}": {
+      "schema": "Contractor",
+      "description": "Coleção de empreiteiras."
+    },
+    "/appointments/{appointmentId}": {
+      "schema": "Appointment",
+      "description": "Coleção de compromissos da agenda."
+    }
+  }
+}

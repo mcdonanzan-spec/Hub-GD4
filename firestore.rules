@@ -1,0 +1,101 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: contractors
+    // Document ID: auto-generated
+    // Fields:
+    //   - name: string (required)
+    //   - status: string (required, enum: APTO, BLOQUEADO, PENDENTE)
+    //   - worksite: string (required)
+    //   - cnpj: string (optional)
+    //   - lastAuditDate: string (optional, ISO 8601)
+    //   - nextAuditDate: string (optional, ISO 8601)
+    //   - criticalIssues: number (optional)
+    //
+    // Collection: appointments
+    // Document ID: auto-generated
+    // Fields:
+    //   - title: string (required)
+    //   - date: string (required, ISO 8601)
+    //   - type: string (required, enum: VISITA, REUNIAO, REGULARIZACAO, AUDITORIA)
+    //   - worksite: string (optional)
+    //   - contractorId: string (optional)
+    //   - description: string (optional)
+    //   - status: string (required, enum: PLANEJADO, REALIZADO, CANCELADO)
+    //   - createdBy: string (required, matches auth.uid)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "mcdonanzan@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isEditor() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']);
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidContractor(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.status in ['APTO', 'BLOQUEADO', 'PENDENTE'] &&
+             data.worksite is string && data.worksite.size() > 0;
+    }
+
+    function isValidAppointment(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             isValidDateString(data.date) &&
+             data.type in ['VISITA', 'REUNIAO', 'REGULARIZACAO', 'AUDITORIA'] &&
+             data.status in ['PLANEJADO', 'REALIZADO', 'CANCELADO'] &&
+             data.createdBy is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /contractors/{contractorId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isEditor();
+      allow delete: if isAdmin();
+    }
+
+    match /appointments/{appointmentId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isEditor();
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) && 
+        (!('role' in request.resource.data) || request.resource.data.role == resource.data.role || isAdmin());
+    }
+  }
+}
