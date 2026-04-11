@@ -128,7 +128,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [users, setUsers] = useState<any[]>([]);
   const [isImporting, setIsImporting] = useState(false);
-  const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '' });
   const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
 
   // Real-time data
@@ -183,13 +183,11 @@ export default function App() {
     const { type, file } = importModal;
     if (!file || !type) return;
 
-    const month = selectedMonth; // Use the month already selected in the UI
+    const month = selectedMonth;
     setImportModal({ show: false, type: null, file: null });
     setIsImporting(true);
-    setImportProgress({ current: 0, total: 0 });
+    setImportProgress({ current: 0, total: 0, status: 'Lendo arquivo...' });
     
-    console.log(`Iniciando importação de ${type} para o mês ${month}...`);
-
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try {
@@ -203,42 +201,58 @@ export default function App() {
           throw new Error("A planilha parece estar vazia ou o formato não é suportado.");
         }
 
-        console.log(`Planilha lida com sucesso. ${data.length} linhas encontradas.`);
-        setImportProgress({ current: 0, total: data.length });
+        setImportProgress({ current: 0, total: data.length, status: 'Preparando dados...' });
 
-        const chunkSize = 15; // Slightly smaller chunks for better stability
+        // Helper to sanitize keys for Firestore (no dots, slashes, etc)
+        const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
+
+        const chunkSize = 10; // Smaller chunks for better reliability
         for (let i = 0; i < data.length; i += chunkSize) {
           const chunk = data.slice(i, i + chunkSize);
+          setImportProgress(prev => ({ ...prev, status: `Enviando linhas ${i + 1} a ${Math.min(i + chunkSize, data.length)}...` }));
+          
           await Promise.all(chunk.map(async (row: any) => {
+            // Sanitize all keys in the row object
+            const sanitizedRawData: any = {};
+            Object.keys(row).forEach(key => {
+              sanitizedRawData[sanitizeKey(key)] = row[key];
+            });
+
             const snapshot: any = {
               type: type,
               referenceMonth: month,
               importDate: new Date().toISOString(),
-              rawData: row,
+              rawData: sanitizedRawData,
               importedBy: user?.uid,
-              worksite: row.Obra || row.worksite || row.OBRA || row.Local || "Geral",
-              contractorName: row.Empresa || row.contractor || row.EMPRESA || row.Nome || row.Razão || "Sem Nome",
-              cnpj: row.CNPJ || row.cnpj || row.Cnpj || "",
+              worksite: String(row.Obra || row.worksite || row.OBRA || row.Local || "Geral"),
+              contractorName: String(row.Empresa || row.contractor || row.EMPRESA || row.Nome || row.Razão || "Sem Nome"),
+              cnpj: String(row.CNPJ || row.cnpj || row.Cnpj || ""),
               status: String(row.Status || row.status || row.STATUS || "PENDENTE").toUpperCase(),
             };
-            return addDoc(collection(db, 'snapshots'), snapshot);
+            
+            try {
+              return await addDoc(collection(db, 'snapshots'), snapshot);
+            } catch (err) {
+              console.error("Erro ao salvar linha:", err, snapshot);
+              throw err;
+            }
           }));
+          
           setImportProgress(prev => ({ ...prev, current: Math.min(i + chunkSize, data.length) }));
-          console.log(`Progresso: ${Math.min(i + chunkSize, data.length)} / ${data.length}`);
         }
 
-        console.log("Importação finalizada com sucesso!");
-        alert(`Importação de ${type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'} concluída com sucesso!`);
+        setImportProgress(prev => ({ ...prev, status: 'Concluído com sucesso!' }));
+        setTimeout(() => {
+          setIsImporting(false);
+          setImportProgress({ current: 0, total: 0, status: '' });
+        }, 2000);
       } catch (error) {
         console.error("Erro Crítico na Importação:", error);
         alert("Erro ao processar a planilha: " + (error instanceof Error ? error.message : "Erro desconhecido"));
-      } finally {
         setIsImporting(false);
-        setImportProgress({ current: 0, total: 0 });
       }
     };
     reader.onerror = (err) => {
-      console.error("Erro na leitura do arquivo:", err);
       alert("Erro ao ler o arquivo físico.");
       setIsImporting(false);
     };
@@ -476,7 +490,7 @@ export default function App() {
                       <Plus size={20} />
                     </div>
                     <div>
-                      <h3 className="font-bold text-blue-900">Processando Planilha...</h3>
+                      <h3 className="font-bold text-blue-900">{importProgress.status || "Processando Planilha..."}</h3>
                       <p className="text-sm text-blue-600">Enviando dados para o sistema de forma segura.</p>
                     </div>
                   </div>
