@@ -129,6 +129,7 @@ export default function App() {
   const [users, setUsers] = useState<any[]>([]);
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
 
   // Real-time data
   useEffect(() => {
@@ -173,16 +174,22 @@ export default function App() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS') => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setImportModal({ show: true, type, file });
+    // Reset input so same file can be selected again if needed
+    e.target.value = "";
+  };
 
-    const month = window.prompt("Confirme o mês de referência (AAAA-MM):", selectedMonth);
-    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
-      alert("Mês inválido. Use o formato AAAA-MM.");
-      return;
-    }
+  const startImport = async () => {
+    const { type, file } = importModal;
+    if (!file || !type) return;
 
+    const month = selectedMonth; // Use the month already selected in the UI
+    setImportModal({ show: false, type: null, file: null });
     setIsImporting(true);
     setImportProgress({ current: 0, total: 0 });
     
+    console.log(`Iniciando importação de ${type} para o mês ${month}...`);
+
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try {
@@ -193,13 +200,13 @@ export default function App() {
         const data = XLSX.utils.sheet_to_json(ws);
 
         if (!Array.isArray(data) || data.length === 0) {
-          throw new Error("Planilha vazia ou formato inválido.");
+          throw new Error("A planilha parece estar vazia ou o formato não é suportado.");
         }
 
+        console.log(`Planilha lida com sucesso. ${data.length} linhas encontradas.`);
         setImportProgress({ current: 0, total: data.length });
 
-        // Process in chunks to avoid UI freeze and handle large files better
-        const chunkSize = 20;
+        const chunkSize = 15; // Slightly smaller chunks for better stability
         for (let i = 0; i < data.length; i += chunkSize) {
           const chunk = data.slice(i, i + chunkSize);
           await Promise.all(chunk.map(async (row: any) => {
@@ -209,28 +216,30 @@ export default function App() {
               importDate: new Date().toISOString(),
               rawData: row,
               importedBy: user?.uid,
-              worksite: row.Obra || row.worksite || row.OBRA || "Geral",
-              contractorName: row.Empresa || row.contractor || row.EMPRESA || row.Nome || "Sem Nome",
-              cnpj: row.CNPJ || row.cnpj || "",
+              worksite: row.Obra || row.worksite || row.OBRA || row.Local || "Geral",
+              contractorName: row.Empresa || row.contractor || row.EMPRESA || row.Nome || row.Razão || "Sem Nome",
+              cnpj: row.CNPJ || row.cnpj || row.Cnpj || "",
               status: String(row.Status || row.status || row.STATUS || "PENDENTE").toUpperCase(),
             };
             return addDoc(collection(db, 'snapshots'), snapshot);
           }));
           setImportProgress(prev => ({ ...prev, current: Math.min(i + chunkSize, data.length) }));
+          console.log(`Progresso: ${Math.min(i + chunkSize, data.length)} / ${data.length}`);
         }
 
+        console.log("Importação finalizada com sucesso!");
         alert(`Importação de ${type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'} concluída com sucesso!`);
       } catch (error) {
-        console.error("Erro ao importar planilha:", error);
+        console.error("Erro Crítico na Importação:", error);
         alert("Erro ao processar a planilha: " + (error instanceof Error ? error.message : "Erro desconhecido"));
       } finally {
         setIsImporting(false);
         setImportProgress({ current: 0, total: 0 });
-        if (e.target) e.target.value = "";
       }
     };
-    reader.onerror = () => {
-      alert("Erro ao ler o arquivo.");
+    reader.onerror = (err) => {
+      console.error("Erro na leitura do arquivo:", err);
+      alert("Erro ao ler o arquivo físico.");
       setIsImporting(false);
     };
     reader.readAsBinaryString(file);
@@ -417,6 +426,43 @@ export default function App() {
         </header>
 
         <div className="p-8 max-w-7xl mx-auto">
+          {/* Import Confirmation Modal */}
+          <AnimatePresence>
+            {importModal.show && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-8"
+                >
+                  <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
+                    <Plus className="text-blue-600 w-8 h-8" />
+                  </div>
+                  <h3 className="text-2xl font-bold text-gray-900 mb-2">Confirmar Importação</h3>
+                  <p className="text-gray-500 mb-6">
+                    Você está prestes a importar dados de <strong>{importModal.type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'}</strong> para o mês de <strong>{selectedMonth}</strong>.
+                  </p>
+                  <div className="flex gap-3">
+                    <Button 
+                      variant="secondary" 
+                      className="flex-1" 
+                      onClick={() => setImportModal({ show: false, type: null, file: null })}
+                    >
+                      Cancelar
+                    </Button>
+                    <Button 
+                      className="flex-1 bg-blue-600 hover:bg-blue-700" 
+                      onClick={startImport}
+                    >
+                      Iniciar Agora
+                    </Button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
           {isImporting && (
             <motion.div 
               initial={{ opacity: 0, y: -20 }}
