@@ -148,15 +148,41 @@ export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }
 
   return (
     <div className="space-y-6">
+      {/* Quick Guide for common tasks */}
+      <div className="bg-blue-600 text-white p-6 rounded-3xl shadow-lg shadow-blue-100 flex flex-col md:flex-row items-center justify-between gap-6">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-sm">
+            <BarChart3 size={24} />
+          </div>
+          <div>
+            <h4 className="font-bold text-lg">Como fazer sua análise?</h4>
+            <p className="text-sm text-blue-100">Siga os passos abaixo para extrair as informações que precisa.</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 max-w-2xl">
+          <div className="bg-white/10 p-3 rounded-2xl backdrop-blur-sm border border-white/10">
+            <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Passo 1: Filtrar Obra</p>
+            <p className="text-xs font-medium">Nos "Filtros de Dados", selecione a coluna <span className="font-bold underline">OBRA</span> e escolha a obra desejada.</p>
+          </div>
+          <div className="bg-white/10 p-3 rounded-2xl backdrop-blur-sm border border-white/10">
+            <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Passo 2: Ver Documentação Mensal</p>
+            <p className="text-xs font-medium">Em "Ver Gráfico Por", selecione <span className="font-bold underline">MÊS DE REFERÊNCIA</span> para ver a evolução no tempo.</p>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
         <div className="lg:col-span-8 space-y-4">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-black text-gray-400 uppercase tracking-widest">Filtros Inteligentes (Até 3 níveis)</label>
+            <div className="flex flex-col">
+              <label className="text-xs font-black text-gray-400 uppercase tracking-widest">Filtros de Dados</label>
+              <p className="text-[10px] text-gray-500 font-medium">Combine até 3 critérios para refinar sua análise</p>
+            </div>
             <button 
               onClick={() => setFilters(prev => prev.map(f => ({ ...f, value: 'ALL' })))}
-              className="text-[10px] font-bold text-blue-600 hover:underline"
+              className="text-[10px] font-bold text-blue-600 hover:underline bg-blue-50 px-2 py-1 rounded-lg"
             >
-              Limpar Filtros
+              Limpar Tudo
             </button>
           </div>
           
@@ -257,13 +283,22 @@ export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }
 
         <div className="lg:col-span-4 flex flex-col justify-between gap-4">
           <div className="space-y-2">
-            <label className="text-xs font-black text-gray-400 uppercase tracking-widest">Agrupar Por (Eixo X)</label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-black text-gray-400 uppercase tracking-widest">Ver Gráfico Por:</label>
+              <div className="group relative">
+                <div className="hidden group-hover:block absolute bottom-full right-0 mb-2 w-48 p-2 bg-gray-900 text-[10px] text-white rounded-lg shadow-xl z-50">
+                  Isso define o que aparecerá na base do gráfico (Eixo X). Ex: Selecione "Mês" para ver a evolução mensal.
+                </div>
+                <span className="text-[10px] text-blue-500 cursor-help">O que é isso?</span>
+              </div>
+            </div>
             <div className="relative">
               <select 
                 value={groupBy}
                 onChange={(e) => setGroupBy(e.target.value)}
                 className="w-full bg-gray-900 text-white border-none rounded-2xl px-4 py-3 text-xs font-bold focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
               >
+                <option value="">SELECIONE UMA DIMENSÃO...</option>
                 {availableColumns.map((col: any) => (
                   <option key={col.key} value={col.key}>{col.label}</option>
                 ))}
@@ -308,46 +343,58 @@ export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }
           </div>
           
           <div className="h-[350px]">
-            <ResponsiveContainer width="100%" height="100%">
-              {chartType === 'bar' ? (
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                  <Tooltip 
-                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                    cursor={{ fill: '#f8fafc' }}
-                  />
-                  <Bar dataKey="value" fill="#3b82f6" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              ) : chartType === 'pie' ? (
-                <RePieChart>
-                  <Pie
-                    data={chartData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={100}
-                    paddingAngle={5}
-                    dataKey="value"
-                  >
-                    {chartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend />
-                </RePieChart>
-              ) : (
-                <ReLineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 6, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }} />
-                </ReLineChart>
-              )}
-            </ResponsiveContainer>
+            {groupBy ? (
+              <ResponsiveContainer width="100%" height="100%">
+                {chartType === 'bar' ? (
+                  <BarChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                      cursor={{ fill: '#f8fafc' }}
+                    />
+                    <Bar dataKey="value" fill="#3b82f6" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                ) : chartType === 'pie' ? (
+                  <RePieChart>
+                    <Pie
+                      data={chartData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={100}
+                      paddingAngle={5}
+                      dataKey="value"
+                    >
+                      {chartData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend />
+                  </RePieChart>
+                ) : (
+                  <ReLineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{ r: 6, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }} />
+                  </ReLineChart>
+                )}
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-center space-y-4 bg-gray-50 rounded-2xl border-2 border-dashed border-gray-100">
+                <div className="p-4 bg-white rounded-2xl shadow-sm">
+                  <BarChart3 size={32} className="text-gray-300" />
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-gray-900">Nenhuma dimensão selecionada</p>
+                  <p className="text-xs text-gray-500">Selecione uma opção em "Ver Gráfico Por" para gerar a visualização.</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

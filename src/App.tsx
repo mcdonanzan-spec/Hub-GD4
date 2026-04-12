@@ -511,13 +511,20 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 50;
 
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
+
   const currentSnapshots = useMemo(() => {
     return snapshots.filter(s => {
-      const monthMatch = selectedMonth === 'ALL' ? true : s.referenceMonth === selectedMonth;
       const typeMatch = s.type === snapshotType;
-      return monthMatch && typeMatch;
+      if (selectedMonth === 'ALL') {
+        if (selectedMonths.length > 0) {
+          return typeMatch && selectedMonths.includes(s.referenceMonth);
+        }
+        return typeMatch;
+      }
+      return typeMatch && s.referenceMonth === selectedMonth;
     });
-  }, [snapshots, selectedMonth, snapshotType]);
+  }, [snapshots, selectedMonth, selectedMonths, snapshotType]);
 
   const paginatedSnapshots = useMemo(() => {
     const start = (currentPage - 1) * PAGE_SIZE;
@@ -1143,13 +1150,47 @@ export default function App() {
                 className="space-y-6"
               >
                 <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
-                  <div className="relative w-full md:w-96">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                    <input 
-                      type="text" 
-                      placeholder="Buscar por nome, CNPJ ou obra..." 
-                      className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-900/5 transition-all"
-                    />
+                  <div className="flex flex-col gap-2 w-full md:w-auto">
+                    <div className="relative w-full md:w-96">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                      <input 
+                        type="text" 
+                        placeholder="Buscar por nome, CNPJ ou obra..." 
+                        className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-900/5 transition-all"
+                      />
+                    </div>
+                    {selectedMonth === 'ALL' && (
+                      <div className="flex flex-wrap gap-1.5 items-center">
+                        <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest mr-2">Filtrar Meses:</span>
+                        {Array.from(new Set(snapshots.map(s => s.referenceMonth).filter(Boolean))).sort().reverse().map(m => (
+                          <button
+                            key={m as string}
+                            onClick={() => {
+                              setSelectedMonths(prev => 
+                                prev.includes(m as string) 
+                                  ? prev.filter(x => x !== m) 
+                                  : [...prev, m as string]
+                              );
+                            }}
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-all ${
+                              selectedMonths.includes(m as string)
+                                ? 'bg-blue-600 text-white shadow-sm'
+                                : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'
+                            }`}
+                          >
+                            {m as string}
+                          </button>
+                        ))}
+                        {selectedMonths.length > 0 && (
+                          <button 
+                            onClick={() => setSelectedMonths([])}
+                            className="text-[10px] font-bold text-red-500 hover:underline ml-2"
+                          >
+                            Limpar
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="flex gap-2 w-full md:w-auto">
                     <div className="flex bg-gray-100 p-1 rounded-xl">
