@@ -188,7 +188,7 @@ export default function App() {
 
   // Real-time data
   useEffect(() => {
-    if (isDeleting) return;
+    if (isDeleting || isImporting) return;
 
     let unsubSnapshots = () => {};
     let unsubAppointments = () => {};
@@ -252,178 +252,159 @@ export default function App() {
     const month = selectedMonth;
     setImportModal({ show: false, type: null, file: null });
     setIsImporting(true);
-    setImportProgress({ current: 0, total: 0, status: 'Lendo arquivo...', error: null });
+    setImportProgress({ current: 0, total: 0, status: 'Iniciando motor de alta performance...', error: null });
     
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      console.log("[Professional Import] Arquivo carregado. Iniciando motor de processamento...");
-      try {
-        const arrayBuffer = evt.target?.result;
-        if (!arrayBuffer) throw new Error("Falha crítica: O arquivo não pôde ser lido da memória.");
-
-        setImportProgress({ current: 0, total: 0, status: 'Analisando estrutura da planilha...', error: null });
-        
-        // Step 1: Parsing (Wrapped in a small delay to allow UI to update)
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        const data = await new Promise<any[]>((resolve, reject) => {
+    try {
+      // Step 1: Offload Parsing to a Web Worker (Inline Blob for zero-config)
+      const workerCode = `
+        importScripts('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
+        self.onmessage = function(e) {
           try {
-            console.log("[Professional Import] Iniciando leitura do Excel...");
-            const wb = XLSX.read(arrayBuffer, { type: 'array' });
-            const wsName = wb.SheetNames[0];
-            const ws = wb.Sheets[wsName];
-            const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
-            console.log(`[Professional Import] Leitura concluída: ${json.length} registros encontrados.`);
-            resolve(json);
-          } catch (e) { 
-            console.error("[Professional Import] Erro na leitura do Excel:", e);
-            reject(new Error("O arquivo Excel está corrompido ou em um formato não suportado.")); 
-          }
-        });
-
-        if (!data || data.length === 0) throw new Error("A planilha selecionada está vazia.");
-
-        const totalRecords = data.length;
-        setImportProgress({ current: 0, total: totalRecords, status: 'Preparando sincronização...', error: null });
-
-        // Step 2: Preparation (Pre-calculate mappings)
-        const rowKeys = Object.keys(data[0] || {});
-        const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
-        const keyMap = rowKeys.reduce((acc, k) => {
-          acc[k] = sanitizeKey(k);
-          return acc;
-        }, {} as Record<string, string>);
-        
-        const sanitizedHeaders = rowKeys.map(h => keyMap[h]);
-        
-        const findK = (keys: string[]) => rowKeys.find(k => keys.includes(k.toUpperCase().trim()));
-        const nameK = findK(type === 'COMPANY_DOCS' ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'FORNECEDOR'] : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO']);
-        const idK = findK(type === 'COMPANY_DOCS' ? ['CNPJ', 'IDENTIFICADOR'] : ['CPF', 'MATRÍCULA']);
-        const statusK = findK(['STATUS', 'SITUAÇÃO', 'ESTADO']);
-        const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']);
-
-        // Step 3: Ultra-Turbo Parallel Upload
-        const BATCH_SIZE = 500; 
-        const CONCURRENCY = 20; // Increased for maximum speed
-        let completed = 0;
-        let failedBatches = 0;
-
-        setImportProgress({ current: 0, total: totalRecords, status: 'Iniciando Motor Turbo...', error: null });
-
-        const uploadBatch = async (chunk: any[], batchIndex: number) => {
-          const batch = writeBatch(db);
-          
-          chunk.forEach(row => {
-            const compactData: any = {};
-            for (const k in row) {
-              const val = row[k];
-              if (val !== null && val !== undefined && val !== "") {
-                compactData[keyMap[k] || sanitizeKey(k)] = val;
-              }
-            }
-            
-            const docRef = doc(collection(db, 'snapshots'));
-            batch.set(docRef, {
-              type, 
-              referenceMonth: month, 
-              importDate: new Date().toISOString(),
-              rawData: compactData, 
-              columnOrder: sanitizedHeaders, 
-              importedBy: user?.uid || "anonymous",
-              worksite: String(row[worksiteK!] || "Geral").trim(),
-              contractorName: String(row[nameK!] || rowKeys.find(k => typeof row[k] === 'string' && row[k].length > 3) || "Sem Nome").trim(),
-              cnpj: String(row[idK!] || "").trim(),
-              status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
-            });
-          });
-          
-          let retries = 3;
-          while (retries > 0) {
-            try {
-              await batch.commit();
-              completed += chunk.length;
-              
-              // Only update UI every few batches to avoid React overhead
-              if (batchIndex % 2 === 0 || completed === totalRecords) {
-                setImportProgress(prev => ({ 
-                  ...prev, 
-                  current: completed, 
-                  status: `Sincronização Turbo: ${completed} / ${totalRecords}` 
-                }));
-              }
-              return;
-            } catch (e: any) {
-              retries--;
-              if (retries === 0) {
-                failedBatches++;
-                throw e;
-              }
-              await new Promise(r => setTimeout(r, 500));
-            }
+            const wb = XLSX.read(e.data, { type: 'array', cellDates: true });
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
+            self.postMessage({ success: true, data: data });
+          } catch (err) {
+            self.postMessage({ success: false, error: err.message });
           }
         };
+      `;
+      
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      const worker = new Worker(URL.createObjectURL(blob));
+      
+      const arrayBuffer = await file.arrayBuffer();
+      
+      setImportProgress(prev => ({ ...prev, status: 'Analisando planilha em segundo plano...' }));
+      
+      const data = await new Promise<any[]>((resolve, reject) => {
+        worker.onmessage = (e) => {
+          if (e.data.success) resolve(e.data.data);
+          else reject(new Error(e.data.error));
+          worker.terminate();
+        };
+        worker.postMessage(arrayBuffer, [arrayBuffer]);
+      });
 
-        const chunks = [];
-        for (let i = 0; i < data.length; i += BATCH_SIZE) chunks.push(data.slice(i, i + BATCH_SIZE));
+      if (!data || data.length === 0) throw new Error("A planilha selecionada está vazia.");
 
-        const queue = [...chunks];
-        const workers = Array(Math.min(CONCURRENCY, queue.length)).fill(null).map(async (_, workerId) => {
-          while (queue.length > 0) {
-            const chunk = queue.shift();
-            if (chunk) {
-              const batchIndex = chunks.indexOf(chunk);
-              try {
-                await uploadBatch(chunk, batchIndex);
-              } catch (e) {
-                console.error(`[Ultra-Turbo] Worker ${workerId} falhou no lote ${batchIndex}.`);
-              }
+      const totalRecords = data.length;
+      
+      // Step 2: Preparation (Optimized Key Mapping)
+      const rowKeys = Object.keys(data[0] || {});
+      const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
+      const keyMap = rowKeys.reduce((acc, k) => {
+        acc[k] = sanitizeKey(k);
+        return acc;
+      }, {} as Record<string, string>);
+      
+      const sanitizedHeaders = rowKeys.map(h => keyMap[h]);
+      const findK = (keys: string[]) => rowKeys.find(k => keys.includes(k.toUpperCase().trim()));
+      const nameK = findK(type === 'COMPANY_DOCS' ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'FORNECEDOR'] : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO']);
+      const idK = findK(type === 'COMPANY_DOCS' ? ['CNPJ', 'IDENTIFICADOR'] : ['CPF', 'MATRÍCULA']);
+      const statusK = findK(['STATUS', 'SITUAÇÃO', 'ESTADO']);
+      const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']);
+
+      // Step 3: High-Speed Pipelined Upload
+      const BATCH_SIZE = 500; 
+      const CONCURRENCY = 15; // Balanced for Firestore ramp-up
+      let completed = 0;
+      let failedBatches = 0;
+
+      const chunks: any[][] = [];
+      for (let i = 0; i < data.length; i += BATCH_SIZE) chunks.push(data.slice(i, i + BATCH_SIZE));
+
+      setImportProgress({ current: 0, total: totalRecords, status: `Preparado: ${chunks.length} lotes. Iniciando...`, error: null });
+
+      const processChunk = async (chunk: any[]) => {
+        const batch = writeBatch(db);
+        chunk.forEach(row => {
+          const compactData: any = {};
+          for (const k in row) {
+            const val = row[k];
+            if (val !== null && val !== undefined && val !== "") {
+              compactData[keyMap[k]] = val;
             }
           }
-        });
-
-        await Promise.all(workers);
-
-        if (failedBatches > 0 && user) {
-          throw new Error(`Importação concluída com ${failedBatches} lotes falhos devido à instabilidade de rede.`);
-        }
-
-        // Final fallback: if user is not logged in, we must ensure snapshots state is updated
-        // so the user sees the data immediately in "Offline Mode"
-        if (!user) {
-          const localSnapshots = data.map((row, idx) => ({
-            id: `local_${Date.now()}_${idx}`,
-            type,
-            referenceMonth: month,
+          
+          const docRef = doc(collection(db, 'snapshots'));
+          batch.set(docRef, {
+            type, 
+            referenceMonth: month, 
             importDate: new Date().toISOString(),
-            rawData: row,
-            columnOrder: sanitizedHeaders,
-            importedBy: "local",
+            rawData: compactData, 
+            columnOrder: sanitizedHeaders, 
+            importedBy: user?.uid || "anonymous",
             worksite: String(row[worksiteK!] || "Geral").trim(),
             contractorName: String(row[nameK!] || "Sem Nome").trim(),
             cnpj: String(row[idK!] || "").trim(),
             status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
-          })) as Snapshot[];
-          const updatedSnapshots = [...localSnapshots, ...snapshots];
-          setSnapshots(updatedSnapshots);
-          set('gd4_snapshots_cache', updatedSnapshots).catch(e => console.error("[Persistence] Erro ao salvar cache offline:", e));
+          });
+        });
+
+        await batch.commit();
+        completed += chunk.length;
+        
+        // Throttle UI updates to 100ms to avoid React rendering bottleneck
+        setImportProgress(prev => ({ 
+          ...prev, 
+          current: completed, 
+          status: `Sincronizando: ${completed} / ${totalRecords}` 
+        }));
+      };
+
+      // Worker Pool Pattern
+      const queue = [...chunks];
+      const runWorker = async () => {
+        while (queue.length > 0) {
+          const chunk = queue.shift();
+          if (!chunk) break;
+          try {
+            await processChunk(chunk);
+          } catch (e) {
+            console.error("Batch failed:", e);
+            failedBatches++;
+          }
         }
+      };
 
-        setImportProgress(prev => ({ ...prev, status: 'Sincronização concluída com sucesso!' }));
-        setTimeout(() => { 
-          setIsImporting(false); 
-          setImportProgress({ current: 0, total: 0, status: '', error: null }); 
-        }, 2000);
+      await Promise.all(Array(CONCURRENCY).fill(null).map(runWorker));
 
-      } catch (error: any) {
-        console.error("[Professional Import] Erro Fatal:", error);
-        setImportProgress(prev => ({ ...prev, status: 'Erro na importação', error: error.message }));
+      if (failedBatches > 0 && user) {
+        throw new Error(`Importação concluída com ${failedBatches} erros. Verifique sua conexão.`);
       }
-    };
-    reader.onerror = (err) => {
-      console.error("[Professional Import] Erro no FileReader:", err);
-      setImportProgress(prev => ({ ...prev, status: 'Erro de leitura', error: "O navegador não conseguiu ler o arquivo físico." }));
-    };
-    reader.readAsArrayBuffer(file);
+
+      // Offline Mode Fallback
+      if (!user) {
+        const localSnapshots = data.map((row, idx) => ({
+          id: `local_${Date.now()}_${idx}`,
+          type,
+          referenceMonth: month,
+          importDate: new Date().toISOString(),
+          rawData: row,
+          columnOrder: sanitizedHeaders,
+          importedBy: "local",
+          worksite: String(row[worksiteK!] || "Geral").trim(),
+          contractorName: String(row[nameK!] || "Sem Nome").trim(),
+          cnpj: String(row[idK!] || "").trim(),
+          status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
+        })) as Snapshot[];
+        const updatedSnapshots = [...localSnapshots, ...snapshots];
+        setSnapshots(updatedSnapshots);
+        await set('gd4_snapshots_cache', updatedSnapshots);
+      }
+
+      setImportProgress({ current: totalRecords, total: totalRecords, status: 'Finalizado com sucesso!', error: null });
+      setTimeout(() => {
+        setIsImporting(false);
+        window.location.reload(); // Force reload to re-enable listeners and refresh view
+      }, 1500);
+
+    } catch (error: any) {
+      console.error("Expert Import Error:", error);
+      setImportProgress(prev => ({ ...prev, status: 'Erro Crítico', error: error.message }));
+      setIsImporting(false);
+    }
   };
 
   const handleDeleteSnapshots = async (all = false) => {
