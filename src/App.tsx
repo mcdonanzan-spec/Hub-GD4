@@ -238,72 +238,84 @@ export default function App() {
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
         const sanitizedHeaders = headers.map(h => sanitizeKey(h));
 
-        const chunkSize = 20; // Small parallel chunks for maximum reliability
-        for (let i = 0; i < data.length; i += chunkSize) {
-          const chunk = data.slice(i, i + chunkSize);
-          const currentBatchNum = Math.floor(i / chunkSize) + 1;
-          const totalChunks = Math.ceil(data.length / chunkSize);
+        const batchSize = 50; // Use small batches for reliability
+        for (let i = 0; i < data.length; i += batchSize) {
+          const chunk = data.slice(i, i + batchSize);
+          const currentBatchNum = Math.floor(i / batchSize) + 1;
+          const totalBatches = Math.ceil(data.length / batchSize);
           
           setImportProgress(prev => ({ 
             ...prev, 
-            status: `Enviando dados... (Lote ${currentBatchNum} de ${totalChunks})` 
+            status: `Enviando lote ${currentBatchNum} de ${totalBatches}...` 
           }));
           
-          // Process this chunk in parallel using individual addDoc calls
-          // This avoids batch size limits and is more resilient to individual failures
-          await Promise.all(chunk.map(async (row: any) => {
-            try {
-              const sanitizedRawData: any = {};
-              Object.keys(row).forEach(key => {
-                sanitizedRawData[sanitizeKey(key)] = row[key];
-              });
+          const batch = writeBatch(db);
+          
+          chunk.forEach((row: any) => {
+            const sanitizedRawData: any = {};
+            Object.keys(row).forEach(key => {
+              sanitizedRawData[sanitizeKey(key)] = row[key];
+            });
 
-              const getVal = (row: any, keys: string[]) => {
-                const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
-                return foundKey ? row[foundKey] : null;
-              };
+            const getVal = (row: any, keys: string[]) => {
+              const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
+              return foundKey ? row[foundKey] : null;
+            };
 
-              const nameKeys = type === 'COMPANY_DOCS' 
-                ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
-                : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
-              
-              const idKeys = type === 'COMPANY_DOCS'
-                ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
-                : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ'];
+            const nameKeys = type === 'COMPANY_DOCS' 
+              ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
+              : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
+            
+            const idKeys = type === 'COMPANY_DOCS'
+              ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
+              : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ'];
 
-              const statusKeys = ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR'];
-              const worksiteKeys = ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO'];
+            const statusKeys = ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR'];
+            const worksiteKeys = ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO'];
 
-              let contractorName = String(getVal(row, nameKeys) || "");
-              if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined" || contractorName === "") {
-                const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL', 'UF', 'CNPJ', 'CPF'].includes(k.toUpperCase()));
-                if (firstStringKey) contractorName = row[firstStringKey];
-              }
-
-              const snapshot: any = {
-                type: type,
-                referenceMonth: month,
-                importDate: new Date().toISOString(),
-                rawData: sanitizedRawData,
-                columnOrder: sanitizedHeaders,
-                importedBy: user?.uid || "anonymous",
-                worksite: String(getVal(row, worksiteKeys) || "Geral"),
-                contractorName: contractorName || "Sem Nome",
-                cnpj: String(getVal(row, idKeys) || ""),
-                status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
-              };
-              
-              await addDoc(collection(db, 'snapshots'), snapshot);
-            } catch (err) {
-              console.error("Erro ao importar linha:", err);
-              // We continue with other rows
+            let contractorName = String(getVal(row, nameKeys) || "");
+            if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined" || contractorName === "") {
+              const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL', 'UF', 'CNPJ', 'CPF'].includes(k.toUpperCase()));
+              if (firstStringKey) contractorName = row[firstStringKey];
             }
-          }));
 
-          setImportProgress(prev => ({ ...prev, current: Math.min(i + chunkSize, data.length) }));
-          
-          // Small delay to keep UI responsive
-          await new Promise(resolve => setTimeout(resolve, 10));
+            const snapshot: any = {
+              type: type,
+              referenceMonth: month,
+              importDate: new Date().toISOString(),
+              rawData: sanitizedRawData,
+              columnOrder: sanitizedHeaders,
+              importedBy: user?.uid || "anonymous",
+              worksite: String(getVal(row, worksiteKeys) || "Geral"),
+              contractorName: contractorName || "Sem Nome",
+              cnpj: String(getVal(row, idKeys) || ""),
+              status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
+            };
+            
+            const docRef = doc(collection(db, 'snapshots'));
+            batch.set(docRef, snapshot);
+          });
+
+          // Retry logic for each batch
+          let retries = 3;
+          let success = false;
+          while (retries > 0 && !success) {
+            try {
+              const commitPromise = batch.commit();
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error("Timeout")), 30000)
+              );
+              await Promise.race([commitPromise, timeoutPromise]);
+              success = true;
+            } catch (err) {
+              retries--;
+              if (retries === 0) throw err;
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+
+          setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, data.length) }));
+          await new Promise(resolve => setTimeout(resolve, 200));
         }
 
         setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
@@ -589,6 +601,11 @@ export default function App() {
               </button>
             )}
           </div>
+          {isSidebarOpen && (
+            <div className="mt-2 text-[8px] text-gray-300 text-center uppercase tracking-widest">
+              v2.1.0-turbo • {new Date().toLocaleTimeString()}
+            </div>
+          )}
         </div>
       </motion.aside>
 

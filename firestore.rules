@@ -44,30 +44,18 @@ service cloud.firestore {
     }
     
     function isAdmin() {
-      return isAuthenticated() && 
-        (request.auth.token.email == "mcdonanzan@gmail.com" || 
-         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
+      return isAuthenticated() && request.auth.token.email == "mcdonanzan@gmail.com";
     }
 
     function isEditor() {
-      return isAuthenticated() && 
-        (request.auth.token.email == "mcdonanzan@gmail.com" || 
-         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']));
-    }
-
-    function isValidSnapshot(data) {
-      return data.type in ['COMPANY_DOCS', 'EMPLOYEE_DOCS'] &&
-             data.referenceMonth is string && data.referenceMonth.matches("^\\d{4}-\\d{2}$") &&
-             data.rawData is map &&
-             data.importedBy == request.auth.uid;
+      return isAuthenticated() && (request.auth.token.email == "mcdonanzan@gmail.com" || 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']));
     }
 
     match /snapshots/{snapshotId} {
       allow read: if isAuthenticated();
-      allow create: if isEditor() && isValidSnapshot(request.resource.data);
-      allow update, delete: if isAuthenticated() && (request.auth.token.email == "mcdonanzan@gmail.com" || isAdmin());
+      allow create, update, delete: if isAuthenticated() && (request.auth.token.email == "mcdonanzan@gmail.com" || isAdmin());
     }
 
     match /appointments/{appointmentId} {
