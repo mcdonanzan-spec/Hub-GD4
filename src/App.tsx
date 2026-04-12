@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { get, set, del } from 'idb-keyval';
 import { 
   LayoutDashboard, 
   Calendar as CalendarIcon, 
@@ -152,23 +153,23 @@ export default function App() {
   
   // Local Persistence Logic
   useEffect(() => {
-    const savedSnapshots = localStorage.getItem('gd4_snapshots_cache');
-    if (savedSnapshots) {
+    const loadCache = async () => {
       try {
-        const parsed = JSON.parse(savedSnapshots);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          console.log(`[Persistence] Carregados ${parsed.length} registros do cache local.`);
-          setSnapshots(parsed);
+        const cached = await get('gd4_snapshots_cache');
+        if (cached && Array.isArray(cached) && cached.length > 0) {
+          console.log(`[Persistence] Carregados ${cached.length} registros do IndexedDB.`);
+          setSnapshots(cached);
         }
       } catch (e) {
-        console.error("[Persistence] Falha ao carregar cache local:", e);
+        console.error("[Persistence] Falha ao carregar cache IndexedDB:", e);
       }
-    }
+    };
+    loadCache();
   }, []);
 
   useEffect(() => {
     if (snapshots.length > 0) {
-      localStorage.setItem('gd4_snapshots_cache', JSON.stringify(snapshots));
+      set('gd4_snapshots_cache', snapshots).catch(e => console.error("[Persistence] Erro ao salvar no IndexedDB:", e));
     }
   }, [snapshots]);
   
@@ -199,7 +200,7 @@ export default function App() {
         const newSnapshots = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Snapshot));
         console.log(`Snapshot recebido: ${snapshot.size} registros.`);
         setSnapshots(newSnapshots);
-        localStorage.setItem('gd4_snapshots_cache', JSON.stringify(newSnapshots));
+        set('gd4_snapshots_cache', newSnapshots).catch(e => console.error("[Persistence] Erro ao atualizar cache:", e));
       }, (err) => {
         console.error("Firestore Snapshot Error:", err);
         // Don't throw if we have local data, just log
@@ -288,7 +289,12 @@ export default function App() {
         // Step 2: Preparation (Pre-calculate mappings)
         const rowKeys = Object.keys(data[0] || {});
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
-        const sanitizedHeaders = rowKeys.map(h => sanitizeKey(h));
+        const keyMap = rowKeys.reduce((acc, k) => {
+          acc[k] = sanitizeKey(k);
+          return acc;
+        }, {} as Record<string, string>);
+        
+        const sanitizedHeaders = rowKeys.map(h => keyMap[h]);
         
         const findK = (keys: string[]) => rowKeys.find(k => keys.includes(k.toUpperCase().trim()));
         const nameK = findK(type === 'COMPANY_DOCS' ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'FORNECEDOR'] : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO']);
@@ -297,27 +303,24 @@ export default function App() {
         const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']);
 
         // Step 3: Ultra-Turbo Parallel Upload
-        const BATCH_SIZE = 500; // Maximum allowed by Firestore for peak performance
-        const CONCURRENCY = 10; // High concurrency for near-instant processing
+        const BATCH_SIZE = 500; 
+        const CONCURRENCY = 20; // Increased for maximum speed
         let completed = 0;
         let failedBatches = 0;
 
-        setImportProgress({ current: 0, total: totalRecords, status: 'Ativando Motor Ultra-Turbo...', error: null });
-        await new Promise(resolve => setTimeout(resolve, 200));
+        setImportProgress({ current: 0, total: totalRecords, status: 'Iniciando Motor Turbo...', error: null });
 
         const uploadBatch = async (chunk: any[], batchIndex: number) => {
           const batch = writeBatch(db);
           
-          // Optimization: Pre-process chunk to minimize work inside the loop
           chunk.forEach(row => {
             const compactData: any = {};
-            // Only store non-empty values to keep documents "light"
-            rowKeys.forEach(k => { 
+            for (const k in row) {
               const val = row[k];
               if (val !== null && val !== undefined && val !== "") {
-                compactData[sanitizeKey(k)] = val; 
+                compactData[keyMap[k] || sanitizeKey(k)] = val;
               }
-            });
+            }
             
             const docRef = doc(collection(db, 'snapshots'));
             batch.set(docRef, {
@@ -340,27 +343,22 @@ export default function App() {
               await batch.commit();
               completed += chunk.length;
               
-              // Update local cache immediately for resilience
-              const currentData = [...snapshots];
-              // This is a bit tricky since we don't have the full list here easily
-              // but the onSnapshot will eventually catch up.
-              // For now, let's just rely on the onSnapshot but ensure it's robust.
-              
-              // Smooth progress update
-              setImportProgress(prev => ({ 
-                ...prev, 
-                current: completed, 
-                status: `Sincronização Ultra-Rápida: ${completed} / ${totalRecords} (${Math.round((completed/totalRecords)*100)}%)` 
-              }));
+              // Only update UI every few batches to avoid React overhead
+              if (batchIndex % 2 === 0 || completed === totalRecords) {
+                setImportProgress(prev => ({ 
+                  ...prev, 
+                  current: completed, 
+                  status: `Sincronização Turbo: ${completed} / ${totalRecords}` 
+                }));
+              }
               return;
             } catch (e: any) {
               retries--;
-              console.warn(`[Ultra-Turbo] Lote ${batchIndex} falhou. Tentando novamente...`, e);
               if (retries === 0) {
                 failedBatches++;
                 throw e;
               }
-              await new Promise(r => setTimeout(r, 1000));
+              await new Promise(r => setTimeout(r, 500));
             }
           }
         };
@@ -404,10 +402,10 @@ export default function App() {
             contractorName: String(row[nameK!] || "Sem Nome").trim(),
             cnpj: String(row[idK!] || "").trim(),
             status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
-          }));
+          })) as Snapshot[];
           const updatedSnapshots = [...localSnapshots, ...snapshots];
           setSnapshots(updatedSnapshots);
-          localStorage.setItem('gd4_snapshots_cache', JSON.stringify(updatedSnapshots));
+          set('gd4_snapshots_cache', updatedSnapshots).catch(e => console.error("[Persistence] Erro ao salvar cache offline:", e));
         }
 
         setImportProgress(prev => ({ ...prev, status: 'Sincronização concluída com sucesso!' }));
@@ -434,7 +432,7 @@ export default function App() {
     setIsDeleting(true);
     
     if (all) {
-      localStorage.removeItem('gd4_snapshots_cache');
+      del('gd4_snapshots_cache').catch(e => console.error("[Persistence] Erro ao limpar IndexedDB:", e));
       setSnapshots([]);
     }
     
