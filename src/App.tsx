@@ -209,6 +209,7 @@ export default function App() {
     
     const reader = new FileReader();
     reader.onload = async (evt) => {
+      console.log("[Expert Import] Arquivo lido com sucesso. Iniciando processamento...");
       try {
         const bstr = evt.target?.result;
         if (!bstr) throw new Error("Não foi possível ler o conteúdo do arquivo.");
@@ -238,9 +239,28 @@ export default function App() {
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
         const sanitizedHeaders = headers.map(h => sanitizeKey(h));
 
-        const batchSize = 100; // Optimized for speed and reliability
+        // Expert Optimization: Pre-calculate column mappings once
+        const rowKeys = Object.keys(data[0] || {});
+        const findKey = (searchKeys: string[]) => {
+          return rowKeys.find(k => searchKeys.includes(k.toUpperCase().trim()));
+        };
+
+        const nameKey = findKey(type === 'COMPANY_DOCS' 
+          ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
+          : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO']);
+        
+        const idKey = findKey(type === 'COMPANY_DOCS'
+          ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
+          : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ']);
+
+        const statusKey = findKey(['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR']);
+        const worksiteKey = findKey(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO']);
+
+        const batchSize = 25; // Even smaller for maximum reliability
         const totalRecords = data.length;
         
+        console.log(`[Expert Import] Iniciando processamento de ${totalRecords} registros em lotes de ${batchSize}`);
+
         for (let i = 0; i < totalRecords; i += batchSize) {
           const chunk = data.slice(i, i + batchSize);
           const currentBatchNum = Math.floor(i / batchSize) + 1;
@@ -248,35 +268,18 @@ export default function App() {
           
           setImportProgress(prev => ({ 
             ...prev, 
-            status: `Enviando lote ${currentBatchNum} de ${totalBatches} (${i} de ${totalRecords} concluídos)...` 
+            status: `Enviando lote ${currentBatchNum} de ${totalBatches}...` 
           }));
           
-          // Pre-process snapshots for this chunk
           const snapshotsToUpload = chunk.map((row: any) => {
             const sanitizedRawData: any = {};
-            Object.keys(row).forEach(key => {
+            rowKeys.forEach(key => {
               sanitizedRawData[sanitizeKey(key)] = row[key];
             });
 
-            const getVal = (row: any, keys: string[]) => {
-              const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
-              return foundKey ? row[foundKey] : null;
-            };
-
-            const nameKeys = type === 'COMPANY_DOCS' 
-              ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
-              : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
-            
-            const idKeys = type === 'COMPANY_DOCS'
-              ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
-              : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ'];
-
-            const statusKeys = ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR'];
-            const worksiteKeys = ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO'];
-
-            let contractorName = String(getVal(row, nameKeys) || "");
-            if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined" || contractorName === "") {
-              const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL', 'UF', 'CNPJ', 'CPF'].includes(k.toUpperCase()));
+            let contractorName = String(nameKey ? row[nameKey] : "");
+            if (!contractorName || contractorName === "undefined" || contractorName === "") {
+              const firstStringKey = rowKeys.find(k => typeof row[k] === 'string' && row[k].length > 3);
               if (firstStringKey) contractorName = row[firstStringKey];
             }
 
@@ -287,19 +290,20 @@ export default function App() {
               rawData: sanitizedRawData,
               columnOrder: sanitizedHeaders,
               importedBy: user?.uid || "anonymous",
-              worksite: String(getVal(row, worksiteKeys) || "Geral"),
+              worksite: String(worksiteKey ? row[worksiteKey] : "Geral"),
               contractorName: contractorName || "Sem Nome",
-              cnpj: String(getVal(row, idKeys) || ""),
-              status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
+              cnpj: String(idKey ? row[idKey] : ""),
+              status: String(statusKey ? row[statusKey] : "PENDENTE").toUpperCase(),
             };
           });
 
-          // Retry logic for each batch
+          // Expert Retry & Timeout Logic
           let retries = 3;
           let success = false;
           while (retries > 0 && !success) {
             try {
-              const batch = writeBatch(db); // ALWAYS fresh batch
+              console.log(`[Expert Import] Enviando lote ${currentBatchNum}/${totalBatches}...`);
+              const batch = writeBatch(db);
               snapshotsToUpload.forEach(snapshot => {
                 const docRef = doc(collection(db, 'snapshots'));
                 batch.set(docRef, snapshot);
@@ -307,20 +311,23 @@ export default function App() {
 
               const commitPromise = batch.commit();
               const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("O servidor demorou muito para responder. Verifique sua internet.")), 40000)
+                setTimeout(() => reject(new Error("Timeout de rede")), 45000)
               );
+              
               await Promise.race([commitPromise, timeoutPromise]);
+              console.log(`[Expert Import] Lote ${currentBatchNum} concluído com sucesso.`);
               success = true;
             } catch (err: any) {
-              console.warn(`Lote ${currentBatchNum} falhou, tentativa ${4 - retries}:`, err);
+              console.error(`[Expert Import] Erro no lote ${currentBatchNum}:`, err);
               retries--;
-              if (retries === 0) throw err;
-              await new Promise(resolve => setTimeout(resolve, 2000));
+              if (retries === 0) throw new Error(`Falha crítica no lote ${currentBatchNum}: ${err.message}`);
+              setImportProgress(prev => ({ ...prev, status: `Erro no lote ${currentBatchNum}. Tentando novamente (${retries} restantes)...` }));
+              await new Promise(resolve => setTimeout(resolve, 3000));
             }
           }
 
           setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, totalRecords) }));
-          // Small delay to keep UI responsive
+          // UI Breathing room
           await new Promise(resolve => setTimeout(resolve, 100));
         }
 
@@ -798,6 +805,16 @@ export default function App() {
                         className="text-[10px] text-gray-400 hover:text-gray-600 underline"
                       >
                         Limpar Cache e Recarregar Sistema
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setIsImporting(false);
+                          setImportProgress({ current: 0, total: 0, status: '', error: null });
+                          window.location.reload();
+                        }}
+                        className="text-[10px] text-red-400 hover:text-red-600 font-bold uppercase tracking-tighter"
+                      >
+                        Forçar Reinício (Se estiver travado)
                       </button>
                       {!navigator.onLine && (
                         <p className="text-[10px] text-red-500 text-center font-bold animate-pulse">
