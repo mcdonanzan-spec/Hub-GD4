@@ -137,7 +137,7 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('table');
   const [snapshotType, setSnapshotType] = useState<'COMPANY_DOCS' | 'EMPLOYEE_DOCS'>('COMPANY_DOCS');
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -209,16 +209,16 @@ export default function App() {
         }
       });
 
-    const qAppointments = query(collection(db, 'appointments'), orderBy('date'));
-    const unsubAppointments = onSnapshot(qAppointments, (snapshot) => {
-      setAppointments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Appointment)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'appointments'));
+      const qAppointments = query(collection(db, 'appointments'), orderBy('date'));
+      unsubAppointments = onSnapshot(qAppointments, (snapshot) => {
+        setAppointments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Appointment)));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, 'appointments'));
 
-    if (isAdmin) {
-      const qUsers = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
-      const unsubUsers = onSnapshot(qUsers, (snapshot) => {
-        setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'));
+      if (isAdmin) {
+        const qUsers = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+        unsubUsers = onSnapshot(qUsers, (snapshot) => {
+          setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'));
       }
     }
 
@@ -249,7 +249,7 @@ export default function App() {
     const { type, file } = importModal;
     if (!file || !type) return;
 
-    const month = selectedMonth;
+    const month = selectedMonth === 'ALL' ? format(new Date(), 'yyyy-MM') : selectedMonth;
     setImportModal({ show: false, type: null, file: null });
     setIsImporting(true);
     setImportProgress({ current: 0, total: 0, status: 'Iniciando motor de alta performance...', error: null });
@@ -775,7 +775,7 @@ export default function App() {
                   </select>
                 </div>
                 
-                {selectedMonth === 'ALL' && (
+                {selectedMonth === 'ALL' && snapshots.length > 0 && (
                   <div className="flex flex-wrap gap-1 items-center justify-end">
                     <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest mr-1">Filtrar Meses:</span>
                     {Array.from(new Set(snapshots.map(s => s.referenceMonth).filter(Boolean))).sort().reverse().map(m => (
@@ -805,6 +805,11 @@ export default function App() {
                         Limpar
                       </button>
                     )}
+                  </div>
+                )}
+                {selectedMonth === 'ALL' && snapshots.length === 0 && (
+                  <div className="text-right">
+                    <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest">Base de dados vazia. Faça um upload para ver os períodos.</span>
                   </div>
                 )}
               </div>
@@ -1102,6 +1107,29 @@ export default function App() {
                         <div className={`w-1.5 h-1.5 rounded-full ${navigator.onLine ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                         {navigator.onLine ? 'ONLINE' : 'OFFLINE'}
                       </div>
+                      {snapshots.length === 0 && (
+                        <Button 
+                          variant="secondary" 
+                          className="bg-blue-50 border-blue-100 text-blue-600 hover:bg-blue-100"
+                          onClick={async () => {
+                            if (window.confirm("Deseja gerar dados de teste para visualizar o sistema?")) {
+                              setIsImporting(true);
+                              setImportProgress({ current: 0, total: 100, status: 'Gerando dados de teste...', error: null });
+                              try {
+                                await seedDatabase();
+                                setIsImporting(false);
+                                window.location.reload();
+                              } catch (err: any) {
+                                console.error("Erro ao gerar sementes:", err);
+                                setImportProgress(prev => ({ ...prev, error: err.message }));
+                                setIsImporting(false);
+                              }
+                            }
+                          }}
+                        >
+                          <Plus size={16} className="mr-2" /> Gerar Dados de Teste
+                        </Button>
+                      )}
                       <Button variant="secondary" onClick={() => window.location.reload()}>
                         <Clock size={16} className="mr-2" /> Sincronizar Agora
                       </Button>
