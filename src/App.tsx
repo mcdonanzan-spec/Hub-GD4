@@ -320,62 +320,78 @@ export default function App() {
   };
 
   const handleDeleteSnapshots = async (all = false) => {
+    if (isDeleting) return;
     setDeleteModal({ show: false, type: '' });
     setIsDeleting(true);
     
-    // Use a fixed copy of the IDs to delete to avoid issues with state updates
-    const targetSnapshots = all ? [...snapshots] : [...currentSnapshots];
-    const total = targetSnapshots.length;
+    // Capture the IDs immediately to avoid issues with state changes during the process
+    const targetIds = all 
+      ? snapshots.map(s => s.id) 
+      : currentSnapshots.map(s => s.id);
+    
+    const total = targetIds.length;
     
     if (total === 0) {
       setIsDeleting(false);
       return;
     }
 
+    console.log(`Iniciando exclusão de ${total} registros...`);
+
     setImportProgress({ 
       current: 0, 
       total: total, 
-      status: all ? 'Iniciando limpeza total...' : 'Iniciando exclusão do mês...', 
+      status: 'Preparando limpeza...', 
       error: null 
     });
 
     try {
-      const batchSize = 250; // Balanced batch size for reliability
+      const batchSize = 100; // Smaller batches for better reliability
       let processed = 0;
       
-      // Process batches sequentially for maximum reliability and to avoid rate limits
-      for (let i = 0; i < targetSnapshots.length; i += batchSize) {
-        const chunk = targetSnapshots.slice(i, i + batchSize);
+      for (let i = 0; i < targetIds.length; i += batchSize) {
+        const chunk = targetIds.slice(i, i + batchSize);
         const batch = writeBatch(db);
         
-        chunk.forEach(s => {
-          batch.delete(doc(db, 'snapshots', s.id));
+        chunk.forEach(id => {
+          batch.delete(doc(db, 'snapshots', id));
         });
 
-        await batch.commit();
+        // Use a timeout to prevent hanging indefinitely
+        const commitPromise = batch.commit();
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Tempo limite excedido ao comunicar com o banco de dados.")), 15000)
+        );
+
+        await Promise.race([commitPromise, timeoutPromise]);
+        
         processed += chunk.length;
         
+        // Update progress
         setImportProgress(prev => ({ 
           ...prev, 
           current: processed,
-          status: `Limpando banco de dados... (${processed} de ${total})`
+          status: `Limpando... (${processed} de ${total})`
         }));
         
-        // Small delay to let the UI breathe and avoid hitting Firestore write limits
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Small delay to prevent rate limiting and keep UI responsive
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
 
-      alert(all ? "Limpeza completa concluída!" : "Registros removidos com sucesso!");
+      setImportProgress(prev => ({ ...prev, status: 'Limpeza concluída!' }));
+      setTimeout(() => {
+        setIsDeleting(false);
+        setImportProgress({ current: 0, total: 0, status: '', error: null });
+      }, 2000);
+      
     } catch (error: any) {
-      console.error("Erro na exclusão:", error);
+      console.error("Erro crítico na exclusão:", error);
       setImportProgress(prev => ({ 
         ...prev, 
         status: 'Erro na exclusão',
-        error: "Ocorreu um erro ao processar a limpeza: " + error.message 
+        error: "Falha ao limpar dados. Por favor, verifique sua conexão e tente novamente. Detalhes: " + (error.message || "Erro desconhecido")
       }));
-    } finally {
       setIsDeleting(false);
-      // We don't clear the progress immediately if there's an error so the user can read it
     }
   };
 
