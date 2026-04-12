@@ -58,6 +58,7 @@ interface Snapshot {
   cnpj?: string;
   status?: string;
   rawData: any;
+  columnOrder?: string[];
   importedBy: string;
 }
 
@@ -136,6 +137,9 @@ export default function App() {
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '', error: null as string | null });
   const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
   
+  const tableContainerRef = React.useRef<HTMLDivElement>(null);
+  const topScrollRef = React.useRef<HTMLDivElement>(null);
+
   // Dashboard Customization State
   const [dashboardConfig, setDashboardConfig] = useState({
     showStats: true,
@@ -213,6 +217,15 @@ export default function App() {
 
         const wsname = wb.SheetNames[0];
         const ws = wb.Sheets[wsname];
+        
+        // Get original headers to preserve order
+        const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+        const headers: string[] = [];
+        for (let C = range.s.c; C <= range.e.c; ++C) {
+          const cell = ws[XLSX.utils.encode_cell({ r: range.s.r, c: C })];
+          if (cell && cell.t) headers.push(XLSX.utils.format_cell(cell));
+        }
+
         const data = XLSX.utils.sheet_to_json(ws);
 
         if (!Array.isArray(data) || data.length === 0) {
@@ -223,6 +236,7 @@ export default function App() {
 
         // Helper to sanitize keys for Firestore (no dots, slashes, etc)
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
+        const sanitizedHeaders = headers.map(h => sanitizeKey(h));
 
         const batchSize = 400; // Firestore limit is 500, using 400 for safety
         for (let i = 0; i < data.length; i += batchSize) {
@@ -243,10 +257,21 @@ export default function App() {
                 return foundKey ? row[foundKey] : null;
               };
 
-              // Fallback for name: find the first column that looks like a name if mapping fails
-              let contractorName = String(getVal(row, ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR']) || "");
-              if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined") {
-                const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL'].includes(k.toUpperCase()));
+              // Context-aware mapping
+              const nameKeys = type === 'COMPANY_DOCS' 
+                ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
+                : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
+              
+              const idKeys = type === 'COMPANY_DOCS'
+                ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
+                : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ'];
+
+              const statusKeys = ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR'];
+              const worksiteKeys = ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO'];
+
+              let contractorName = String(getVal(row, nameKeys) || "");
+              if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined" || contractorName === "") {
+                const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL', 'UF', 'CNPJ', 'CPF'].includes(k.toUpperCase()));
                 if (firstStringKey) contractorName = row[firstStringKey];
               }
 
@@ -255,11 +280,12 @@ export default function App() {
                 referenceMonth: month,
                 importDate: new Date().toISOString(),
                 rawData: sanitizedRawData,
+                columnOrder: sanitizedHeaders,
                 importedBy: user?.uid || "anonymous",
-                worksite: String(getVal(row, ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE']) || "Geral"),
+                worksite: String(getVal(row, worksiteKeys) || "Geral"),
                 contractorName: contractorName || "Sem Nome",
-                cnpj: String(getVal(row, ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ']) || ""),
-                status: String(getVal(row, ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO']) || "PENDENTE").toUpperCase(),
+                cnpj: String(getVal(row, idKeys) || ""),
+                status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
               };
             
             const docRef = doc(collection(db, 'snapshots'));
@@ -338,6 +364,43 @@ export default function App() {
     const typeMatch = s.type === snapshotType;
     return monthMatch && typeMatch;
   });
+
+  const [tableWidth, setTableWidth] = useState(0);
+
+  useEffect(() => {
+    const tableContainer = tableContainerRef.current;
+    const topScroll = topScrollRef.current;
+    if (!tableContainer || !topScroll) return;
+
+    const updateWidth = () => {
+      if (tableContainer.scrollWidth !== tableWidth) {
+        setTableWidth(tableContainer.scrollWidth);
+      }
+    };
+
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(tableContainer);
+
+    const handleScroll = (source: HTMLDivElement, target: HTMLDivElement) => {
+      if (Math.abs(target.scrollLeft - source.scrollLeft) > 1) {
+        target.scrollLeft = source.scrollLeft;
+      }
+    };
+
+    const onTableScroll = () => handleScroll(tableContainer, topScroll);
+    const onTopScroll = () => handleScroll(topScroll, tableContainer);
+
+    tableContainer.addEventListener('scroll', onTableScroll);
+    topScroll.addEventListener('scroll', onTopScroll);
+
+    return () => {
+      observer.disconnect();
+      tableContainer.removeEventListener('scroll', onTableScroll);
+      topScroll.removeEventListener('scroll', onTopScroll);
+    };
+  }, [viewMode, activeTab, currentSnapshots, tableWidth]);
+
   const totalEmpresas = currentSnapshots.length;
   const aptas = currentSnapshots.filter(s => s.status === 'APTO').length;
   const bloqueadas = currentSnapshots.filter(s => s.status === 'BLOQUEADO').length;
@@ -979,37 +1042,54 @@ export default function App() {
                     ))}
                   </div>
                 ) : (
-                  <Card className="overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse">
+                  <Card className="overflow-hidden flex flex-col">
+                    {/* Top Scrollbar */}
+                    <div 
+                      ref={topScrollRef}
+                      className="overflow-x-auto overflow-y-hidden h-3 bg-gray-50 border-b border-gray-100 scrollbar-thin"
+                    >
+                      <div style={{ width: tableWidth || '100%', height: '1px' }} />
+                    </div>
+
+                    <div ref={tableContainerRef} className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse min-w-max">
                         <thead>
                           <tr className="bg-gray-50 border-b border-gray-100">
-                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
-                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Nome/Empresa</th>
+                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 bg-gray-50 z-10">Status</th>
+                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-[100px] bg-gray-50 z-10">
+                              {snapshotType === 'COMPANY_DOCS' ? 'Nome/Empresa' : 'Nome/Colaborador'}
+                            </th>
                             <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Obra/Local</th>
                             <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Mês Ref.</th>
-                            {currentSnapshots.length > 0 && Object.keys(currentSnapshots[0].rawData || {}).slice(0, 6).map(key => (
+                            <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">
+                              {snapshotType === 'COMPANY_DOCS' ? 'CNPJ' : 'CPF/ID'}
+                            </th>
+                            {currentSnapshots.length > 0 && (currentSnapshots[0].columnOrder || Object.keys(currentSnapshots[0].rawData || {})).map(key => (
                               <th key={key} className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">{key}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50">
-                          {currentSnapshots.map((s) => (
-                            <tr key={s.id} className="hover:bg-gray-50 transition-colors">
-                              <td className="px-6 py-4">
-                                <Badge status={s.status as any} />
-                              </td>
-                              <td className="px-6 py-4 font-medium text-gray-900">{s.contractorName}</td>
-                              <td className="px-6 py-4 text-gray-500 text-sm">{s.worksite}</td>
-                              <td className="px-6 py-4 text-gray-500 text-sm">{s.referenceMonth}</td>
-                              {Object.values(s.rawData || {}).slice(0, 6).map((val: any, i) => (
-                                <td key={i} className="px-6 py-4 text-gray-400 text-xs truncate max-w-[150px]">{String(val)}</td>
-                              ))}
-                            </tr>
-                          ))}
+                          {currentSnapshots.map((s) => {
+                            const columns = s.columnOrder || Object.keys(s.rawData || {});
+                            return (
+                              <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                                <td className="px-6 py-4 sticky left-0 bg-white group-hover:bg-gray-50 z-10">
+                                  <Badge status={s.status as any} />
+                                </td>
+                                <td className="px-6 py-4 font-medium text-gray-900 sticky left-[100px] bg-white group-hover:bg-gray-50 z-10">{s.contractorName}</td>
+                                <td className="px-6 py-4 text-gray-500 text-sm">{s.worksite}</td>
+                                <td className="px-6 py-4 text-gray-500 text-sm">{s.referenceMonth}</td>
+                                <td className="px-6 py-4 text-gray-500 text-sm font-mono">{s.cnpj || '---'}</td>
+                                {columns.map((key, i) => (
+                                  <td key={i} className="px-6 py-4 text-gray-400 text-xs truncate max-w-[200px]">{String(s.rawData[key] || '')}</td>
+                                ))}
+                              </tr>
+                            );
+                          })}
                           {currentSnapshots.length === 0 && (
                             <tr>
-                              <td colSpan={10} className="px-6 py-12 text-center text-gray-400">
+                              <td colSpan={20} className="px-6 py-12 text-center text-gray-400">
                                 Nenhum registro encontrado para este filtro.
                               </td>
                             </tr>
