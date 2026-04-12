@@ -209,31 +209,51 @@ export default function App() {
     
     const reader = new FileReader();
     reader.onload = async (evt) => {
-      console.log("[Professional Import] Arquivo carregado na memória. Iniciando processamento...");
+      console.log("[Professional Import] Arquivo carregado. Iniciando motor de processamento...");
       try {
         const arrayBuffer = evt.target?.result;
-        if (!arrayBuffer) throw new Error("Falha na leitura do arquivo.");
+        if (!arrayBuffer) throw new Error("Falha crítica: O arquivo não pôde ser lido da memória.");
 
-        setImportProgress({ current: 0, total: 0, status: 'Processando Excel (Aguarde)...', error: null });
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        // Optimized reading: Use a worker-like approach by wrapping in a promise to prevent UI lock
+        setImportProgress({ current: 0, total: 0, status: 'Analisando estrutura da planilha...', error: null });
+        
+        // Step 1: Parsing (Wrapped in a small delay to allow UI to update)
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
         const data = await new Promise<any[]>((resolve, reject) => {
           try {
-            const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
-            const ws = wb.Sheets[wb.SheetNames[0]];
-            const json = XLSX.utils.sheet_to_json(ws, { defval: null });
+            console.log("[Professional Import] Iniciando leitura do Excel...");
+            const wb = XLSX.read(arrayBuffer, { type: 'array' });
+            const wsName = wb.SheetNames[0];
+            const ws = wb.Sheets[wsName];
+            const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+            console.log(`[Professional Import] Leitura concluída: ${json.length} registros encontrados.`);
             resolve(json);
-          } catch (e) { reject(e); }
+          } catch (e) { 
+            console.error("[Professional Import] Erro na leitura do Excel:", e);
+            reject(new Error("O arquivo Excel está corrompido ou em um formato não suportado.")); 
+          }
         });
 
-        if (!data || data.length === 0) throw new Error("Planilha vazia ou formato inválido.");
+        if (!data || data.length === 0) throw new Error("A planilha selecionada está vazia.");
 
         const totalRecords = data.length;
-        console.log(`[Professional Import] ${totalRecords} registros detectados. Iniciando sincronização...`);
-        setImportProgress({ current: 0, total: totalRecords, status: 'Iniciando sincronização com o servidor...', error: null });
+        setImportProgress({ current: 0, total: totalRecords, status: 'Testando conexão com o banco de dados...', error: null });
 
-        // Pre-calculate mappings to avoid overhead in the loop
+        // Step 2: Connection Test
+        try {
+          await addDoc(collection(db, 'system_logs'), { 
+            action: 'import_start', 
+            user: user?.email, 
+            count: totalRecords,
+            timestamp: serverTimestamp() 
+          });
+          console.log("[Professional Import] Conexão com Firestore confirmada.");
+        } catch (e: any) {
+          console.error("[Professional Import] Falha na conexão inicial:", e);
+          throw new Error("Não foi possível conectar ao servidor. Verifique sua internet ou permissões.");
+        }
+
+        // Step 3: Preparation
         const rowKeys = Object.keys(data[0] || {});
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
         const sanitizedHeaders = rowKeys.map(h => sanitizeKey(h));
@@ -244,12 +264,13 @@ export default function App() {
         const statusK = findK(['STATUS', 'SITUAÇÃO', 'ESTADO']);
         const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']);
 
-        // Professional Strategy: Optimized batches for Firestore
-        const BATCH_SIZE = 100; 
-        const CONCURRENCY = 4; 
+        // Step 4: High-Speed Parallel Upload
+        const BATCH_SIZE = 50; // Optimized for stability
+        const CONCURRENCY = 5; // Balanced load
         let completed = 0;
+        let failedBatches = 0;
 
-        const uploadBatch = async (chunk: any[]) => {
+        const uploadBatch = async (chunk: any[], batchIndex: number) => {
           const batch = writeBatch(db);
           chunk.forEach(row => {
             const compactData: any = {};
@@ -282,28 +303,43 @@ export default function App() {
                 status: `Sincronizando... ${completed} de ${totalRecords} (${Math.round((completed/totalRecords)*100)}%)` 
               }));
               return;
-            } catch (e) {
+            } catch (e: any) {
               retries--;
-              if (retries === 0) throw e;
-              console.warn("[Professional Import] Lote falhou, tentando novamente...", e);
+              console.warn(`[Professional Import] Lote ${batchIndex} falhou (${retries} tentativas restantes):`, e);
+              if (retries === 0) {
+                failedBatches++;
+                throw e;
+              }
               await new Promise(r => setTimeout(r, 2000));
             }
           }
         };
 
-        // Queue-based parallel processing
         const chunks = [];
         for (let i = 0; i < data.length; i += BATCH_SIZE) chunks.push(data.slice(i, i + BATCH_SIZE));
 
         const queue = [...chunks];
-        const workers = Array(Math.min(CONCURRENCY, queue.length)).fill(null).map(async () => {
+        const workers = Array(Math.min(CONCURRENCY, queue.length)).fill(null).map(async (_, workerId) => {
           while (queue.length > 0) {
+            const batchIndex = chunks.length - queue.length;
             const chunk = queue.shift();
-            if (chunk) await uploadBatch(chunk);
+            if (chunk) {
+              try {
+                await uploadBatch(chunk, batchIndex);
+              } catch (e) {
+                console.error(`[Professional Import] Worker ${workerId} falhou no lote ${batchIndex}.`);
+                // We continue with other batches even if one fails
+              }
+            }
           }
         });
 
         await Promise.all(workers);
+
+        if (failedBatches > 0) {
+          throw new Error(`Importação finalizada com avisos: ${failedBatches} lotes não puderam ser enviados. Verifique sua conexão.`);
+        }
+
         setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
         setTimeout(() => { 
           setIsImporting(false); 
@@ -311,12 +347,13 @@ export default function App() {
         }, 3000);
 
       } catch (error: any) {
-        console.error("Erro Profissional:", error);
+        console.error("[Professional Import] Erro Fatal:", error);
         setImportProgress(prev => ({ ...prev, status: 'Erro na importação', error: error.message }));
       }
     };
     reader.onerror = (err) => {
-      setImportProgress(prev => ({ ...prev, status: 'Erro de leitura', error: "Erro ao ler o arquivo do seu computador." }));
+      console.error("[Professional Import] Erro no FileReader:", err);
+      setImportProgress(prev => ({ ...prev, status: 'Erro de leitura', error: "O navegador não conseguiu ler o arquivo físico." }));
     };
     reader.readAsArrayBuffer(file);
   };
