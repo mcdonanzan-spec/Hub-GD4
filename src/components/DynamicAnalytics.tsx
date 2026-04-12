@@ -29,11 +29,20 @@ interface DynamicAnalyticsProps {
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 
+interface FilterConfig {
+  column: string;
+  value: string | string[];
+}
+
 export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }) => {
   const [groupBy, setGroupBy] = useState<string>('');
-  const [filterBy, setFilterBy] = useState<string>('');
-  const [filterValue, setFilterValue] = useState<string>('ALL');
+  const [filters, setFilters] = useState<FilterConfig[]>([
+    { column: '', value: 'ALL' },
+    { column: '', value: 'ALL' },
+    { column: '', value: 'ALL' }
+  ]);
   const [chartType, setChartType] = useState<'bar' | 'pie' | 'line'>('bar');
+  const [showWorksiteSelector, setShowWorksiteSelector] = useState(false);
 
   // Extract all possible keys from the data
   const availableColumns = useMemo(() => {
@@ -46,20 +55,20 @@ export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }
     }));
   }, [data]);
 
-  // Extract unique values for the selected filter column
-  const filterValues = useMemo(() => {
-    if (!filterBy || data.length === 0) return [];
+  // Extract unique values for a specific column
+  const getColumnValues = (columnKey: string) => {
+    if (!columnKey || data.length === 0) return [];
     const values = new Set<string>();
     data.forEach(item => {
-      const val = item.rawData?.[filterBy];
+      const val = item.rawData?.[columnKey];
       if (val !== null && val !== undefined && val !== "") {
         values.add(String(val));
       }
     });
     return Array.from(values).sort();
-  }, [data, filterBy]);
+  };
 
-  // Set default groupBy if not set
+  // Set default groupBy and filters if not set
   React.useEffect(() => {
     if (!groupBy && availableColumns.length > 0) {
       const defaultCol = availableColumns.find((c: any) => 
@@ -67,18 +76,42 @@ export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }
       ) || availableColumns[0];
       setGroupBy(defaultCol.key);
     }
-    if (!filterBy && availableColumns.length > 0) {
-      const defaultFilter = availableColumns.find((c: any) => 
+    
+    // Initialize first filter with 'OBRA' if available
+    if (availableColumns.length > 0 && !filters[0].column) {
+      const obraCol = availableColumns.find((c: any) => 
         ['OBRA', 'LOCAL', 'PROJETO'].includes(c.key.toUpperCase())
-      ) || availableColumns[0];
-      setFilterBy(defaultFilter.key);
+      );
+      if (obraCol) {
+        setFilters(prev => {
+          const newFilters = [...prev];
+          newFilters[0].column = obraCol.key;
+          return newFilters;
+        });
+      }
     }
-  }, [availableColumns, groupBy, filterBy]);
+  }, [availableColumns, groupBy]);
 
   const filteredData = useMemo(() => {
-    if (filterValue === 'ALL') return data;
-    return data.filter(item => String(item.rawData?.[filterBy]) === filterValue);
-  }, [data, filterBy, filterValue]);
+    return data.filter(item => {
+      return filters.every(f => {
+        if (!f.column || f.value === 'ALL') return true;
+        const itemValue = String(item.rawData?.[f.column] || '');
+        if (Array.isArray(f.value)) {
+          return f.value.includes(itemValue);
+        }
+        return itemValue === f.value;
+      });
+    });
+  }, [data, filters]);
+
+  const updateFilter = (index: number, column: string, value: string | string[]) => {
+    setFilters(prev => {
+      const newFilters = [...prev];
+      newFilters[index] = { column, value };
+      return newFilters;
+    });
+  };
 
   const chartData = useMemo(() => {
     if (!groupBy || filteredData.length === 0) return [];
@@ -104,82 +137,150 @@ export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="space-y-2">
-          <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">1. Filtrar por</label>
-          <div className="flex gap-2">
-            <div className="relative flex-1">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+        <div className="lg:col-span-8 space-y-4">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-black text-gray-400 uppercase tracking-widest">Filtros Inteligentes (Até 3 níveis)</label>
+            <button 
+              onClick={() => setFilters(prev => prev.map(f => ({ ...f, value: 'ALL' })))}
+              className="text-[10px] font-bold text-blue-600 hover:underline"
+            >
+              Limpar Filtros
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {filters.map((f, idx) => {
+              const values = getColumnValues(f.column);
+              const isMultiSelect = f.column.toUpperCase().includes('OBRA') || f.column.toUpperCase().includes('LOCAL');
+
+              return (
+                <div key={idx} className="space-y-2 p-3 bg-gray-50 rounded-2xl border border-gray-100">
+                  <select 
+                    value={f.column}
+                    onChange={(e) => updateFilter(idx, e.target.value, 'ALL')}
+                    className="w-full bg-transparent text-[10px] font-black text-gray-500 uppercase tracking-tighter focus:outline-none cursor-pointer"
+                  >
+                    <option value="">SELECIONAR COLUNA...</option>
+                    {availableColumns.map((col: any) => (
+                      <option key={col.key} value={col.key}>{col.label}</option>
+                    ))}
+                  </select>
+
+                  {f.column && (
+                    <div className="relative">
+                      {isMultiSelect ? (
+                        <div className="relative">
+                          <button 
+                            onClick={() => setShowWorksiteSelector(idx === 0 ? !showWorksiteSelector : false)}
+                            className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold text-left flex items-center justify-between"
+                          >
+                            <span className="truncate">
+                              {f.value === 'ALL' ? 'TODOS SELECIONADOS' : Array.isArray(f.value) ? `${f.value.length} SELECIONADOS` : f.value}
+                            </span>
+                            <ChevronDown size={14} className="text-gray-400" />
+                          </button>
+                          
+                          {showWorksiteSelector && idx === 0 && (
+                            <div className="absolute z-30 mt-2 w-full bg-white border border-gray-200 rounded-2xl shadow-xl p-4 space-y-3 max-h-64 overflow-y-auto custom-scrollbar">
+                              <div className="flex gap-2 border-b border-gray-100 pb-2">
+                                <button 
+                                  onClick={() => updateFilter(idx, f.column, 'ALL')}
+                                  className="flex-1 text-[10px] font-bold bg-gray-900 text-white py-1 rounded-lg"
+                                >
+                                  TODOS
+                                </button>
+                                <button 
+                                  onClick={() => updateFilter(idx, f.column, [])}
+                                  className="flex-1 text-[10px] font-bold bg-gray-100 text-gray-600 py-1 rounded-lg"
+                                >
+                                  NENHUM
+                                </button>
+                              </div>
+                              <div className="space-y-1">
+                                {values.map(val => (
+                                  <label key={val} className="flex items-center gap-2 p-1.5 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors">
+                                    <input 
+                                      type="checkbox"
+                                      checked={f.value === 'ALL' || (Array.isArray(f.value) && f.value.includes(val))}
+                                      onChange={(e) => {
+                                        let newValue: string[] = [];
+                                        if (f.value === 'ALL') {
+                                          newValue = values.filter(v => v !== val);
+                                        } else if (Array.isArray(f.value)) {
+                                          newValue = e.target.checked 
+                                            ? [...f.value, val] 
+                                            : f.value.filter(v => v !== val);
+                                        }
+                                        updateFilter(idx, f.column, newValue.length === values.length ? 'ALL' : newValue);
+                                      }}
+                                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                    />
+                                    <span className="text-xs font-medium text-gray-700 truncate">{val}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <select 
+                          value={Array.isArray(f.value) ? 'ALL' : f.value}
+                          onChange={(e) => updateFilter(idx, f.column, e.target.value)}
+                          className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
+                        >
+                          <option value="ALL">TODOS</option>
+                          {values.map((val: string) => (
+                            <option key={val} value={val}>{val}</option>
+                          ))}
+                        </select>
+                      )}
+                      {!isMultiSelect && <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="lg:col-span-4 flex flex-col justify-between gap-4">
+          <div className="space-y-2">
+            <label className="text-xs font-black text-gray-400 uppercase tracking-widest">Agrupar Por (Eixo X)</label>
+            <div className="relative">
               <select 
-                value={filterBy}
-                onChange={(e) => { setFilterBy(e.target.value); setFilterValue('ALL'); }}
-                className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-xs font-bold focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
+                value={groupBy}
+                onChange={(e) => setGroupBy(e.target.value)}
+                className="w-full bg-gray-900 text-white border-none rounded-2xl px-4 py-3 text-xs font-bold focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
               >
                 {availableColumns.map((col: any) => (
                   <option key={col.key} value={col.key}>{col.label}</option>
                 ))}
               </select>
-              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-            </div>
-            <div className="relative flex-1">
-              <select 
-                value={filterValue}
-                onChange={(e) => setFilterValue(e.target.value)}
-                className="w-full bg-blue-50 border border-blue-100 text-blue-700 rounded-xl px-3 py-2.5 text-xs font-bold focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
-              >
-                <option value="ALL">TODOS</option>
-                {filterValues.map((val: string) => (
-                  <option key={val} value={val}>{val}</option>
-                ))}
-              </select>
-              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-400 pointer-events-none" />
+              <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-white/50 pointer-events-none" />
             </div>
           </div>
-        </div>
 
-        <div className="space-y-2">
-          <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">2. Agrupar por</label>
-          <div className="relative">
-            <select 
-              value={groupBy}
-              onChange={(e) => setGroupBy(e.target.value)}
-              className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 text-xs font-bold focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
-            >
-              {availableColumns.map((col: any) => (
-                <option key={col.key} value={col.key}>{col.label}</option>
-              ))}
-            </select>
-            <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">3. Tipo de Gráfico</label>
-          <div className="flex bg-gray-100 p-1 rounded-xl">
+          <div className="flex bg-gray-100 p-1 rounded-2xl">
             <button 
               onClick={() => setChartType('bar')}
-              className={`flex-1 flex items-center justify-center gap-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${chartType === 'bar' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black transition-all ${chartType === 'bar' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
             >
-              <BarChart3 size={12} /> BARRA
+              <BarChart3 size={14} /> BARRA
             </button>
             <button 
               onClick={() => setChartType('pie')}
-              className={`flex-1 flex items-center justify-center gap-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${chartType === 'pie' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black transition-all ${chartType === 'pie' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
             >
-              <PieChart size={12} /> PIZZA
+              <PieChart size={14} /> PIZZA
             </button>
             <button 
               onClick={() => setChartType('line')}
-              className={`flex-1 flex items-center justify-center gap-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${chartType === 'line' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black transition-all ${chartType === 'line' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
             >
-              <LineChart size={12} /> LINHA
+              <LineChart size={14} /> LINHA
             </button>
           </div>
-        </div>
-
-        <div className="flex items-end">
-          <button className="w-full bg-gray-900 text-white rounded-xl py-2.5 text-xs font-bold flex items-center justify-center gap-2 hover:bg-black transition-all">
-            <Download size={14} /> EXPORTAR PDF/XLS
-          </button>
         </div>
       </div>
 
