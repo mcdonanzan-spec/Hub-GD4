@@ -475,6 +475,9 @@ export default function App() {
     };
 
     updateWidth();
+    // Small delay to ensure table is fully rendered
+    const timer = setTimeout(updateWidth, 100);
+
     const observer = new ResizeObserver(updateWidth);
     observer.observe(tableContainer);
 
@@ -491,11 +494,12 @@ export default function App() {
     topScroll.addEventListener('scroll', onTopScroll);
 
     return () => {
+      clearTimeout(timer);
       observer.disconnect();
       tableContainer.removeEventListener('scroll', onTableScroll);
       topScroll.removeEventListener('scroll', onTopScroll);
     };
-  }, [viewMode, activeTab, currentSnapshots, tableWidth]);
+  }, [viewMode, activeTab, currentSnapshots, tableWidth, snapshotType]);
 
   const totalEmpresas = currentSnapshots.length;
   const aptas = currentSnapshots.filter(s => s.status === 'APTO').length;
@@ -1285,10 +1289,10 @@ export default function App() {
                   </div>
                 ) : (
                   <Card className="overflow-hidden flex flex-col">
-                    {/* Top Scrollbar */}
+                    {/* Top Scrollbar - Only visible if table is wider than container */}
                     <div 
                       ref={topScrollRef}
-                      className="overflow-x-auto overflow-y-hidden h-3 bg-gray-50 border-b border-gray-100 scrollbar-thin"
+                      className={`overflow-x-auto overflow-y-hidden h-2.5 bg-gray-50 border-b border-gray-100 scrollbar-thin transition-opacity ${tableWidth > (tableContainerRef.current?.clientWidth || 0) ? 'opacity-100' : 'opacity-0 h-0'}`}
                     >
                       <div style={{ width: tableWidth || '100%', height: '1px' }} />
                     </div>
