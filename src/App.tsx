@@ -151,7 +151,7 @@ export default function App() {
 
   // Real-time data
   useEffect(() => {
-    if (!user) return;
+    if (!user || isDeleting) return;
 
     const qSnapshots = query(collection(db, 'snapshots'), orderBy('importDate', 'desc'));
     const unsubSnapshots = onSnapshot(qSnapshots, (snapshot) => {
@@ -346,35 +346,20 @@ export default function App() {
     });
 
     try {
-      const batchSize = 50; // Even smaller batches for maximum stability
+      const chunkSize = 20; // Small parallel chunks
       let processed = 0;
       
-      for (let i = 0; i < targetIds.length; i += batchSize) {
-        const chunk = targetIds.slice(i, i + batchSize);
+      for (let i = 0; i < targetIds.length; i += chunkSize) {
+        const chunk = targetIds.slice(i, i + chunkSize);
         
-        try {
-          const batch = writeBatch(db);
-          chunk.forEach(id => {
-            batch.delete(doc(db, 'snapshots', id));
-          });
-
-          const commitPromise = batch.commit();
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Timeout")), 10000)
-          );
-
-          await Promise.race([commitPromise, timeoutPromise]);
-        } catch (batchError) {
-          console.warn("Batch failed, falling back to individual deletes for this chunk", batchError);
-          // Fallback: Delete individually if batch fails
-          for (const id of chunk) {
-            try {
-              await deleteDoc(doc(db, 'snapshots', id));
-            } catch (singleError) {
-              console.error(`Failed to delete doc ${id}`, singleError);
-            }
-          }
-        }
+        // Delete this chunk in parallel using individual deleteDoc calls
+        // This is often more reliable than batches for large volumes on unstable connections
+        await Promise.all(chunk.map(id => 
+          deleteDoc(doc(db, 'snapshots', id)).catch(err => {
+            console.error(`Erro ao excluir documento ${id}:`, err);
+            // Continue even if one fails
+          })
+        ));
         
         processed += chunk.length;
         
@@ -384,14 +369,16 @@ export default function App() {
           status: `Limpando... (${processed} de ${total})`
         }));
         
-        await new Promise(resolve => setTimeout(resolve, 30));
+        // Very small delay to keep the UI responsive
+        await new Promise(resolve => setTimeout(resolve, 10));
       }
 
-      setImportProgress(prev => ({ ...prev, status: 'Limpeza concluída!' }));
-      setTimeout(() => {
-        setIsDeleting(false);
-        setImportProgress({ current: 0, total: 0, status: '', error: null });
-      }, 2000);
+      setImportProgress(prev => ({ ...prev, status: 'Limpeza concluída! Recarregando...' }));
+      
+      // Force a small delay before finishing to let Firestore catch up
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      window.location.reload(); // Force reload to ensure clean state
       
     } catch (error: any) {
       console.error("Erro crítico na exclusão:", error);
