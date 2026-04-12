@@ -615,15 +615,16 @@ export default function App() {
                   <h3 className="text-2xl font-bold text-gray-900 mb-2">
                     {deleteModal.type === 'ALL' ? 'Excluir TUDO' : 'Confirmar Exclusão'}
                   </h3>
-                  <p className="text-gray-500 mb-6">
-                    {deleteModal.type === 'ALL' ? (
-                      <>Você está prestes a excluir <strong>TODOS os {snapshots.length} registros</strong> de todo o histórico do sistema.</>
-                    ) : (
-                      <>Você está prestes a excluir <strong>{currentSnapshots.length}</strong> registros de <strong>{deleteModal.type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'}</strong> do mês <strong>{selectedMonth}</strong>.</>
-                    )}
-                    <br /><br />
-                    <span className="text-red-600 font-bold">Esta ação é irreversível e apagará os dados permanentemente.</span>
-                  </p>
+                    <p className="text-gray-500 mb-6">
+                      {deleteModal.type === 'ALL' ? (
+                        <>Você está prestes a excluir <strong>TODOS os {snapshots.length} registros</strong> importados de todo o histórico do sistema.</>
+                      ) : (
+                        <>Você está prestes a excluir <strong>{currentSnapshots.length}</strong> registros de <strong>{deleteModal.type === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'}</strong> do mês <strong>{selectedMonth}</strong>.</>
+                      )}
+                      <br /><br />
+                      <span className="text-gray-600 block mb-2">Nota: A <strong>Agenda</strong> e seus compromissos <strong>não</strong> serão afetados por esta ação.</span>
+                      <span className="text-red-600 font-bold">Esta ação é irreversível para os dados importados.</span>
+                    </p>
                   <div className="flex flex-col gap-3">
                     <Button 
                       className="w-full bg-red-600 hover:bg-red-700 text-white py-6 text-lg" 
@@ -788,7 +789,7 @@ export default function App() {
                           onClick={() => setDeleteModal({ show: true, type: 'ALL' })}
                           disabled={isDeleting || snapshots.length === 0}
                         >
-                          <X size={16} className="mr-2" /> Resetar Sistema
+                          <X size={16} className="mr-2" /> Limpar Dados Importados
                         </Button>
                       )}
                       {isAdmin && (
