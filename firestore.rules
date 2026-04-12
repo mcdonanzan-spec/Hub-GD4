@@ -53,6 +53,11 @@ service cloud.firestore {
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']));
     }
 
+    match /system_logs/{logId} {
+      allow create: if isAuthenticated();
+      allow read: if isAdmin();
+    }
+
     match /snapshots/{snapshotId} {
       allow read: if isAuthenticated();
       allow create, update, delete: if isAuthenticated() && (request.auth.token.email == "mcdonanzan@gmail.com" || isAdmin());

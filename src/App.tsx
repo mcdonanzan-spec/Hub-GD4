@@ -232,93 +232,93 @@ export default function App() {
           throw new Error("A planilha parece estar vazia ou o formato não é suportado (certifique-se de que os dados estão na primeira aba).");
         }
 
-        setImportProgress({ current: 0, total: data.length, status: 'Preparando dados...', error: null });
+        setImportProgress({ current: 0, total: data.length, status: 'Verificando conexão...', error: null });
+        try {
+          await addDoc(collection(db, 'system_logs'), { action: 'import_attempt', user: user?.email, timestamp: new Date().toISOString() });
+        } catch (e) {
+          throw new Error("Falha na conexão inicial. Verifique sua internet.");
+        }
 
         // Helper to sanitize keys for Firestore (no dots, slashes, etc)
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
         const sanitizedHeaders = headers.map(h => sanitizeKey(h));
 
-        const batchSize = 40; // Slightly smaller for better stability
-        for (let i = 0; i < data.length; i += batchSize) {
-          const chunk = data.slice(i, i + batchSize);
-          const currentBatchNum = Math.floor(i / batchSize) + 1;
-          const totalBatches = Math.ceil(data.length / batchSize);
+        // Sequential processing for maximum reliability on slow connections
+        for (let i = 0; i < data.length; i++) {
+          const row = data[i];
           
           setImportProgress(prev => ({ 
             ...prev, 
-            status: `Enviando lote ${currentBatchNum} de ${totalBatches}...` 
+            status: `Enviando registro ${i + 1} de ${data.length}...` 
           }));
           
-          // Pre-process snapshots for this chunk
-          const snapshotsToUpload = chunk.map((row: any) => {
-            const sanitizedRawData: any = {};
-            Object.keys(row).forEach(key => {
-              sanitizedRawData[sanitizeKey(key)] = row[key];
-            });
-
-            const getVal = (row: any, keys: string[]) => {
-              const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
-              return foundKey ? row[foundKey] : null;
-            };
-
-            const nameKeys = type === 'COMPANY_DOCS' 
-              ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
-              : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
-            
-            const idKeys = type === 'COMPANY_DOCS'
-              ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
-              : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ'];
-
-            const statusKeys = ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR'];
-            const worksiteKeys = ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO'];
-
-            let contractorName = String(getVal(row, nameKeys) || "");
-            if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined" || contractorName === "") {
-              const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL', 'UF', 'CNPJ', 'CPF'].includes(k.toUpperCase()));
-              if (firstStringKey) contractorName = row[firstStringKey];
-            }
-
-            return {
-              type: type,
-              referenceMonth: month,
-              importDate: new Date().toISOString(),
-              rawData: sanitizedRawData,
-              columnOrder: sanitizedHeaders,
-              importedBy: user?.uid || "anonymous",
-              worksite: String(getVal(row, worksiteKeys) || "Geral"),
-              contractorName: contractorName || "Sem Nome",
-              cnpj: String(getVal(row, idKeys) || ""),
-              status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
-            };
+          const sanitizedRawData: any = {};
+          Object.keys(row).forEach(key => {
+            sanitizedRawData[sanitizeKey(key)] = row[key];
           });
 
-          // Retry logic for each batch
+          const getVal = (row: any, keys: string[]) => {
+            const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
+            return foundKey ? row[foundKey] : null;
+          };
+
+          const nameKeys = type === 'COMPANY_DOCS' 
+            ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
+            : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
+          
+          const idKeys = type === 'COMPANY_DOCS'
+            ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
+            : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ'];
+
+          const statusKeys = ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR'];
+          const worksiteKeys = ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO'];
+
+          let contractorName = String(getVal(row, nameKeys) || "");
+          if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined" || contractorName === "") {
+            const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL', 'UF', 'CNPJ', 'CPF'].includes(k.toUpperCase()));
+            if (firstStringKey) contractorName = row[firstStringKey];
+          }
+
+          const snapshot = {
+            type: type,
+            referenceMonth: month,
+            importDate: new Date().toISOString(),
+            rawData: sanitizedRawData,
+            columnOrder: sanitizedHeaders,
+            importedBy: user?.uid || "anonymous",
+            worksite: String(getVal(row, worksiteKeys) || "Geral"),
+            contractorName: contractorName || "Sem Nome",
+            cnpj: String(getVal(row, idKeys) || ""),
+            status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
+          };
+
+          // Individual retry logic for each document
           let retries = 3;
           let success = false;
           while (retries > 0 && !success) {
             try {
-              const batch = writeBatch(db); // Create a FRESH batch for each attempt
-              snapshotsToUpload.forEach(snapshot => {
-                const docRef = doc(collection(db, 'snapshots'));
-                batch.set(docRef, snapshot);
-              });
-
-              const commitPromise = batch.commit();
+              const addPromise = addDoc(collection(db, 'snapshots'), snapshot);
               const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Timeout")), 30000)
+                setTimeout(() => reject(new Error(`O servidor demorou muito para responder no registro ${i + 1}. Verifique sua conexão.`)), 60000)
               );
-              await Promise.race([commitPromise, timeoutPromise]);
+              await Promise.race([addPromise, timeoutPromise]);
               success = true;
-            } catch (err) {
-              console.warn(`Lote ${currentBatchNum} falhou, tentando novamente... (${retries-1} tentativas restantes)`, err);
+            } catch (err: any) {
+              console.warn(`Falha no registro ${i + 1}, tentativa ${4 - retries}:`, err);
               retries--;
-              if (retries === 0) throw err;
-              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait longer between retries
+              if (retries === 0) {
+                const errorMsg = err.message?.includes('permission-denied') 
+                  ? "Erro de Permissão: Você não tem autorização para salvar dados."
+                  : `Erro de Conexão: ${err.message || "O servidor não respondeu a tempo."}`;
+                throw new Error(errorMsg);
+              }
+              await new Promise(resolve => setTimeout(resolve, 2000));
             }
           }
 
-          setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, data.length) }));
-          await new Promise(resolve => setTimeout(resolve, 100));
+          setImportProgress(prev => ({ ...prev, current: i + 1 }));
+          // Small delay between records for stability
+          await new Promise(resolve => setTimeout(resolve, 300));
         }
 
         setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
@@ -775,17 +775,33 @@ export default function App() {
                     </div>
                   )}
                   {importProgress.error ? (
-                    <Button 
-                      variant="secondary" 
-                      className="bg-white border-red-200 text-red-600 hover:bg-red-50"
-                      onClick={() => {
-                        setIsImporting(false);
-                        setIsDeleting(false);
-                        setImportProgress({ current: 0, total: 0, status: '', error: null });
-                      }}
-                    >
-                      Fechar e Tentar Novamente
-                    </Button>
+                    <div className="flex flex-col gap-2">
+                      <Button 
+                        variant="secondary" 
+                        className="bg-white border-red-200 text-red-600 hover:bg-red-50"
+                        onClick={() => {
+                          setIsImporting(false);
+                          setIsDeleting(false);
+                          setImportProgress({ current: 0, total: 0, status: '', error: null });
+                        }}
+                      >
+                        Fechar e Tentar Novamente
+                      </Button>
+                      <button 
+                        onClick={() => {
+                          localStorage.clear();
+                          window.location.reload();
+                        }}
+                        className="text-[10px] text-gray-400 hover:text-gray-600 underline"
+                      >
+                        Limpar Cache e Recarregar Sistema
+                      </button>
+                      {!navigator.onLine && (
+                        <p className="text-[10px] text-red-500 text-center font-bold animate-pulse">
+                          ⚠️ VOCÊ ESTÁ OFFLINE
+                        </p>
+                      )}
+                    </div>
                   ) : (
                     <Button 
                       variant="ghost" 
