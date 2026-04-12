@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { get, set, del } from 'idb-keyval';
 import { 
   LayoutDashboard, 
@@ -508,11 +508,33 @@ export default function App() {
 
   const handleLogout = () => signOut(auth);
 
-  const currentSnapshots = snapshots.filter(s => {
-    const monthMatch = selectedMonth === 'ALL' ? true : s.referenceMonth === selectedMonth;
-    const typeMatch = s.type === snapshotType;
-    return monthMatch && typeMatch;
-  });
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 50;
+
+  const currentSnapshots = useMemo(() => {
+    return snapshots.filter(s => {
+      const monthMatch = selectedMonth === 'ALL' ? true : s.referenceMonth === selectedMonth;
+      const typeMatch = s.type === snapshotType;
+      return monthMatch && typeMatch;
+    });
+  }, [snapshots, selectedMonth, snapshotType]);
+
+  const paginatedSnapshots = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return currentSnapshots.slice(start, start + PAGE_SIZE);
+  }, [currentSnapshots, currentPage]);
+
+  const totalPages = Math.ceil(currentSnapshots.length / PAGE_SIZE);
+
+  // Reset page when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedMonth, snapshotType, activeTab]);
+
+  const tableHeaders = useMemo(() => {
+    if (currentSnapshots.length === 0) return [];
+    return currentSnapshots[0].columnOrder || Object.keys(currentSnapshots[0].rawData || {});
+  }, [currentSnapshots]);
 
   const [tableWidth, setTableWidth] = useState(0);
   const [isOverflowing, setIsOverflowing] = useState(false);
@@ -1236,16 +1258,16 @@ export default function App() {
                             <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">
                               {snapshotType === 'COMPANY_DOCS' ? 'CNPJ' : 'CPF/ID'}
                             </th>
-                            {currentSnapshots.length > 0 && (currentSnapshots[0].columnOrder || Object.keys(currentSnapshots[0].rawData || {})).map(key => (
+                            {tableHeaders.map(key => (
                               <th key={key} className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">{key}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50">
-                          {currentSnapshots.map((s) => {
-                            const columns = s.columnOrder || Object.keys(s.rawData || {});
+                          {paginatedSnapshots.map((s) => {
+                            const columns = tableHeaders;
                             return (
-                              <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                              <tr key={s.id} className="hover:bg-gray-50 transition-colors group">
                                 <td className="px-6 py-4 sticky left-0 bg-white group-hover:bg-gray-50 z-10">
                                   <Badge status={s.status as any} />
                                 </td>
@@ -1277,6 +1299,34 @@ export default function App() {
                         </tbody>
                       </table>
                     </div>
+
+                    {/* Pagination Controls */}
+                    {totalPages > 1 && (
+                      <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+                        <p className="text-xs text-gray-500 font-medium">
+                          Mostrando <span className="text-gray-900 font-bold">{(currentPage - 1) * PAGE_SIZE + 1}</span> a <span className="text-gray-900 font-bold">{Math.min(currentPage * PAGE_SIZE, currentSnapshots.length)}</span> de <span className="text-gray-900 font-bold">{currentSnapshots.length}</span> registros
+                        </p>
+                        <div className="flex gap-2">
+                          <button 
+                            disabled={currentPage === 1}
+                            onClick={() => setCurrentPage(prev => prev - 1)}
+                            className="p-2 hover:bg-white hover:shadow-sm rounded-lg border border-gray-200 disabled:opacity-30 transition-all"
+                          >
+                            <ChevronLeft size={16} />
+                          </button>
+                          <div className="flex items-center gap-1 px-3 bg-white border border-gray-200 rounded-lg text-xs font-bold">
+                            {currentPage} / {totalPages}
+                          </div>
+                          <button 
+                            disabled={currentPage === totalPages}
+                            onClick={() => setCurrentPage(prev => prev + 1)}
+                            className="p-2 hover:bg-white hover:shadow-sm rounded-lg border border-gray-200 disabled:opacity-30 transition-all"
+                          >
+                            <ChevronRight size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </Card>
                 )}
               </motion.div>
@@ -1418,7 +1468,7 @@ export default function App() {
 
 // --- Sub-components ---
 
-function NavItem({ icon, label, active, onClick, collapsed }: any) {
+const NavItem = React.memo(({ icon, label, active, onClick, collapsed }: any) => {
   return (
     <button 
       onClick={onClick}
@@ -1432,9 +1482,9 @@ function NavItem({ icon, label, active, onClick, collapsed }: any) {
       {!collapsed && <span className="font-medium">{label}</span>}
     </button>
   );
-}
+});
 
-function StatCard({ title, value, icon, trend, color = "gray" }: any) {
+const StatCard = React.memo(({ title, value, icon, trend, color = "gray" }: any) => {
   const colors: any = {
     gray: "bg-blue-50 text-blue-600",
     emerald: "bg-emerald-50 text-emerald-600",
@@ -1453,16 +1503,28 @@ function StatCard({ title, value, icon, trend, color = "gray" }: any) {
       <h4 className="text-3xl font-bold text-gray-900">{value}</h4>
     </Card>
   );
-}
+});
 
 function Calendar({ appointments }: { appointments: Appointment[] }) {
   const [currentDate, setCurrentDate] = useState(new Date());
-  const monthStart = startOfMonth(currentDate);
-  const monthEnd = endOfMonth(monthStart);
-  const startDate = startOfWeek(monthStart);
-  const endDate = addDays(startOfWeek(monthEnd), 6);
+  
+  const { days, monthStart, appointmentsByDate } = useMemo(() => {
+    const start = startOfMonth(currentDate);
+    const end = endOfMonth(start);
+    const startDate = startOfWeek(start);
+    const endDate = addDays(startOfWeek(end), 6);
+    const daysInterval = eachDayOfInterval({ start: startDate, end: endDate });
 
-  const days = eachDayOfInterval({ start: startDate, end: endDate });
+    // Pre-group appointments by date for O(1) lookup during render
+    const grouped: Record<string, Appointment[]> = {};
+    appointments.forEach(a => {
+      const dateKey = format(new Date(a.date), 'yyyy-MM-dd');
+      if (!grouped[dateKey]) grouped[dateKey] = [];
+      grouped[dateKey].push(a);
+    });
+
+    return { days: daysInterval, monthStart: start, appointmentsByDate: grouped };
+  }, [currentDate, appointments]);
 
   return (
     <Card className="p-6">
@@ -1490,7 +1552,8 @@ function Calendar({ appointments }: { appointments: Appointment[] }) {
           </div>
         ))}
         {days.map((day, i) => {
-          const dayAppointments = appointments.filter(a => isSameDay(new Date(a.date), day));
+          const dateKey = format(day, 'yyyy-MM-dd');
+          const dayAppointments = appointmentsByDate[dateKey] || [];
           return (
             <div 
               key={i} 

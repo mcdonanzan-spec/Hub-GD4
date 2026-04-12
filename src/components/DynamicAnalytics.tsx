@@ -55,17 +55,28 @@ export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }
     }));
   }, [data]);
 
-  // Extract unique values for a specific column
-  const getColumnValues = (columnKey: string) => {
-    if (!columnKey || data.length === 0) return [];
-    const values = new Set<string>();
-    data.forEach(item => {
-      const val = item.rawData?.[columnKey];
-      if (val !== null && val !== undefined && val !== "") {
-        values.add(String(val));
-      }
+  // Pre-calculate unique values for all columns to avoid expensive iterations during render
+  const allColumnValues = useMemo(() => {
+    if (data.length === 0) return {};
+    const valuesMap: Record<string, string[]> = {};
+    
+    availableColumns.forEach(col => {
+      const values = new Set<string>();
+      data.forEach(item => {
+        const val = item.rawData?.[col.key];
+        if (val !== null && val !== undefined && val !== "") {
+          values.add(String(val));
+        }
+      });
+      valuesMap[col.key] = Array.from(values).sort();
     });
-    return Array.from(values).sort();
+    
+    return valuesMap;
+  }, [data, availableColumns]);
+
+  // Extract unique values for a specific column from pre-calculated map
+  const getColumnValues = (columnKey: string) => {
+    return allColumnValues[columnKey] || [];
   };
 
   // Set default groupBy and filters if not set
