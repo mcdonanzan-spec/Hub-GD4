@@ -237,23 +237,9 @@ export default function App() {
         if (!data || data.length === 0) throw new Error("A planilha selecionada está vazia.");
 
         const totalRecords = data.length;
-        setImportProgress({ current: 0, total: totalRecords, status: 'Testando conexão com o banco de dados...', error: null });
+        setImportProgress({ current: 0, total: totalRecords, status: 'Preparando sincronização...', error: null });
 
-        // Step 2: Connection Test
-        try {
-          await addDoc(collection(db, 'system_logs'), { 
-            action: 'import_start', 
-            user: user?.email, 
-            count: totalRecords,
-            timestamp: serverTimestamp() 
-          });
-          console.log("[Professional Import] Conexão com Firestore confirmada.");
-        } catch (e: any) {
-          console.error("[Professional Import] Falha na conexão inicial:", e);
-          throw new Error("Não foi possível conectar ao servidor. Verifique sua internet ou permissões.");
-        }
-
-        // Step 3: Preparation
+        // Step 2: Preparation (Pre-calculate mappings)
         const rowKeys = Object.keys(data[0] || {});
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
         const sanitizedHeaders = rowKeys.map(h => sanitizeKey(h));
@@ -264,11 +250,14 @@ export default function App() {
         const statusK = findK(['STATUS', 'SITUAÇÃO', 'ESTADO']);
         const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']);
 
-        // Step 4: High-Speed Parallel Upload
-        const BATCH_SIZE = 50; // Optimized for stability
-        const CONCURRENCY = 5; // Balanced load
+        // Step 3: High-Speed Parallel Upload
+        const BATCH_SIZE = 100; // Increased for better performance on large files
+        const CONCURRENCY = 6; // Slightly increased concurrency
         let completed = 0;
         let failedBatches = 0;
+
+        setImportProgress({ current: 0, total: totalRecords, status: 'Iniciando sincronização turbo...', error: null });
+        await new Promise(resolve => setTimeout(resolve, 300));
 
         const uploadBatch = async (chunk: any[], batchIndex: number) => {
           const batch = writeBatch(db);
