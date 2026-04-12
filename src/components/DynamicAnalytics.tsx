@@ -159,14 +159,18 @@ export const DynamicAnalytics: React.FC<DynamicAnalyticsProps> = ({ data, type }
             <p className="text-sm text-blue-100">Siga os passos abaixo para extrair as informações que precisa.</p>
           </div>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 max-w-2xl">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 flex-1 max-w-3xl">
           <div className="bg-white/10 p-3 rounded-2xl backdrop-blur-sm border border-white/10">
-            <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Passo 1: Filtrar Obra</p>
+            <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Passo 1: Selecionar Período</p>
+            <p className="text-xs font-medium">No topo, escolha <span className="font-bold underline">Todos os Períodos</span> e selecione os meses que deseja comparar.</p>
+          </div>
+          <div className="bg-white/10 p-3 rounded-2xl backdrop-blur-sm border border-white/10">
+            <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Passo 2: Filtrar Obra</p>
             <p className="text-xs font-medium">Nos "Filtros de Dados", selecione a coluna <span className="font-bold underline">OBRA</span> e escolha a obra desejada.</p>
           </div>
           <div className="bg-white/10 p-3 rounded-2xl backdrop-blur-sm border border-white/10">
-            <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Passo 2: Ver Documentação Mensal</p>
-            <p className="text-xs font-medium">Em "Ver Gráfico Por", selecione <span className="font-bold underline">MÊS DE REFERÊNCIA</span> para ver a evolução no tempo.</p>
+            <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Passo 3: Ver Evolução</p>
+            <p className="text-xs font-medium">Em "Ver Gráfico Por", selecione <span className="font-bold underline">MÊS DE REFERÊNCIA</span> para ver o gráfico de evolução.</p>
           </div>
         </div>
       </div>

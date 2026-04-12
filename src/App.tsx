@@ -746,21 +746,22 @@ export default function App() {
               </div>
             )}
             {(activeTab === 'dashboard' || activeTab === 'contractors') && (
+              <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-xl border border-gray-200">
                   <div className="relative flex items-center">
                     <CalendarIcon size={14} className="absolute left-2 text-gray-400 pointer-events-none" />
                     <select 
                       value={selectedMonth}
-                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      onChange={(e) => {
+                        setSelectedMonth(e.target.value);
+                        if (e.target.value !== 'ALL') setSelectedMonths([]);
+                      }}
                       className="bg-transparent border-none text-[11px] font-bold focus:ring-0 cursor-pointer pl-7 pr-4 py-1 appearance-none"
                     >
                       <option value="ALL">Todos os Períodos</option>
                       {Array.from(new Set(snapshots.map(s => s.referenceMonth).filter(Boolean))).sort().reverse().map(m => (
                         <option key={m as string} value={m as string}>{m as string}</option>
                       ))}
-                      {!snapshots.some(s => s.referenceMonth === format(new Date(), 'yyyy-MM')) && (
-                        <option value={format(new Date(), 'yyyy-MM')}>{format(new Date(), 'yyyy-MM')}</option>
-                      )}
                     </select>
                   </div>
                   <div className="h-4 w-px bg-gray-300 mx-1" />
@@ -773,6 +774,40 @@ export default function App() {
                     <option value="EMPLOYEE_DOCS">Colaboradores</option>
                   </select>
                 </div>
+                
+                {selectedMonth === 'ALL' && (
+                  <div className="flex flex-wrap gap-1 items-center justify-end">
+                    <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest mr-1">Filtrar Meses:</span>
+                    {Array.from(new Set(snapshots.map(s => s.referenceMonth).filter(Boolean))).sort().reverse().map(m => (
+                      <button
+                        key={m as string}
+                        onClick={() => {
+                          setSelectedMonths(prev => 
+                            prev.includes(m as string) 
+                              ? prev.filter(x => x !== m) 
+                              : [...prev, m as string]
+                          );
+                        }}
+                        className={`px-2 py-0.5 rounded-full text-[9px] font-bold transition-all border ${
+                          selectedMonths.includes(m as string)
+                            ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                            : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                        }`}
+                      >
+                        {m as string}
+                      </button>
+                    ))}
+                    {selectedMonths.length > 0 && (
+                      <button 
+                        onClick={() => setSelectedMonths([])}
+                        className="text-[9px] font-bold text-red-500 hover:underline ml-1"
+                      >
+                        Limpar
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
           <div className="flex items-center gap-4">
@@ -1159,38 +1194,6 @@ export default function App() {
                         className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-900/5 transition-all"
                       />
                     </div>
-                    {selectedMonth === 'ALL' && (
-                      <div className="flex flex-wrap gap-1.5 items-center">
-                        <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest mr-2">Filtrar Meses:</span>
-                        {Array.from(new Set(snapshots.map(s => s.referenceMonth).filter(Boolean))).sort().reverse().map(m => (
-                          <button
-                            key={m as string}
-                            onClick={() => {
-                              setSelectedMonths(prev => 
-                                prev.includes(m as string) 
-                                  ? prev.filter(x => x !== m) 
-                                  : [...prev, m as string]
-                              );
-                            }}
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-all ${
-                              selectedMonths.includes(m as string)
-                                ? 'bg-blue-600 text-white shadow-sm'
-                                : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'
-                            }`}
-                          >
-                            {m as string}
-                          </button>
-                        ))}
-                        {selectedMonths.length > 0 && (
-                          <button 
-                            onClick={() => setSelectedMonths([])}
-                            className="text-[10px] font-bold text-red-500 hover:underline ml-2"
-                          >
-                            Limpar
-                          </button>
-                        )}
-                      </div>
-                    )}
                   </div>
                   <div className="flex gap-2 w-full md:w-auto">
                     <div className="flex bg-gray-100 p-1 rounded-xl">
