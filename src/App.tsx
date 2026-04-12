@@ -323,13 +323,27 @@ export default function App() {
     setDeleteModal({ show: false, type: '' });
     setIsDeleting(true);
     
-    const targetSnapshots = all ? snapshots : currentSnapshots;
-    setImportProgress({ current: 0, total: targetSnapshots.length, status: all ? 'Iniciando limpeza total...' : 'Iniciando exclusão do mês...', error: null });
+    // Use a fixed copy of the IDs to delete to avoid issues with state updates
+    const targetSnapshots = all ? [...snapshots] : [...currentSnapshots];
+    const total = targetSnapshots.length;
+    
+    if (total === 0) {
+      setIsDeleting(false);
+      return;
+    }
+
+    setImportProgress({ 
+      current: 0, 
+      total: total, 
+      status: all ? 'Iniciando limpeza total...' : 'Iniciando exclusão do mês...', 
+      error: null 
+    });
 
     try {
-      const batchSize = 450; // Using 450 for safety (limit is 500)
-      const batches = [];
+      const batchSize = 250; // Balanced batch size for reliability
+      let processed = 0;
       
+      // Process batches sequentially for maximum reliability and to avoid rate limits
       for (let i = 0; i < targetSnapshots.length; i += batchSize) {
         const chunk = targetSnapshots.slice(i, i + batchSize);
         const batch = writeBatch(db);
@@ -338,32 +352,30 @@ export default function App() {
           batch.delete(doc(db, 'snapshots', s.id));
         });
 
-        batches.push(batch.commit().then(() => {
-          setImportProgress(prev => ({ 
-            ...prev, 
-            current: Math.min(prev.current + chunk.length, targetSnapshots.length),
-            status: `Excluindo registros... (${Math.min(prev.current + chunk.length, targetSnapshots.length)} de ${targetSnapshots.length})`
-          }));
+        await batch.commit();
+        processed += chunk.length;
+        
+        setImportProgress(prev => ({ 
+          ...prev, 
+          current: processed,
+          status: `Limpando banco de dados... (${processed} de ${total})`
         }));
-
-        // Limit parallel batches to avoid overwhelming the client/network
-        if (batches.length >= 5) {
-          await Promise.all(batches);
-          batches.length = 0;
-        }
-      }
-      
-      if (batches.length > 0) {
-        await Promise.all(batches);
+        
+        // Small delay to let the UI breathe and avoid hitting Firestore write limits
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      alert(all ? "TODOS os dados do sistema foram excluídos com sucesso!" : "Registros do mês excluídos com sucesso!");
+      alert(all ? "Limpeza completa concluída!" : "Registros removidos com sucesso!");
     } catch (error: any) {
-      console.error("Erro ao excluir snapshots:", error);
-      alert("Erro ao excluir registros: " + error.message);
+      console.error("Erro na exclusão:", error);
+      setImportProgress(prev => ({ 
+        ...prev, 
+        status: 'Erro na exclusão',
+        error: "Ocorreu um erro ao processar a limpeza: " + error.message 
+      }));
     } finally {
       setIsDeleting(false);
-      setImportProgress({ current: 0, total: 0, status: '', error: null });
+      // We don't clear the progress immediately if there's an error so the user can read it
     }
   };
 
