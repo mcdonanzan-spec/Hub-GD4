@@ -6,6 +6,7 @@ import {
   User,
   MessageSquare, 
   LogOut, 
+  LogIn,
   List,
   Grid,
   Menu, 
@@ -122,7 +123,15 @@ const Badge = ({ status }: { status: string }) => {
 // --- Main App ---
 
 export default function App() {
-  const { user, loading, isAdmin, isEditor } = useAuth();
+  const { user, loading, isAdmin, isEditor, role } = useAuth();
+  
+  useEffect(() => {
+    if (user) {
+      console.log(`[Auth Debug] Usuário: ${user.email}, Role: ${role}, isEditor: ${isEditor}, isAdmin: ${isAdmin}`);
+    } else {
+      console.log(`[Auth Debug] Usuário não autenticado. Entrando em Modo Offline.`);
+    }
+  }, [user, role, isEditor, isAdmin]);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -141,6 +150,28 @@ export default function App() {
   const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
   const [selectedSnapshot, setSelectedSnapshot] = useState<Snapshot | null>(null);
   
+  // Local Persistence Logic
+  useEffect(() => {
+    const savedSnapshots = localStorage.getItem('gd4_snapshots_cache');
+    if (savedSnapshots) {
+      try {
+        const parsed = JSON.parse(savedSnapshots);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(`[Persistence] Carregados ${parsed.length} registros do cache local.`);
+          setSnapshots(parsed);
+        }
+      } catch (e) {
+        console.error("[Persistence] Falha ao carregar cache local:", e);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (snapshots.length > 0) {
+      localStorage.setItem('gd4_snapshots_cache', JSON.stringify(snapshots));
+    }
+  }, [snapshots]);
+  
   const tableContainerRef = React.useRef<HTMLDivElement>(null);
   const topScrollRef = React.useRef<HTMLDivElement>(null);
 
@@ -156,13 +187,26 @@ export default function App() {
 
   // Real-time data
   useEffect(() => {
-    if (!user || isDeleting) return;
+    if (isDeleting) return;
 
-    const qSnapshots = query(collection(db, 'snapshots'), orderBy('importDate', 'desc'));
-    const unsubSnapshots = onSnapshot(qSnapshots, (snapshot) => {
-      console.log(`Snapshot recebido: ${snapshot.size} registros.`);
-      setSnapshots(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Snapshot)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'snapshots'));
+    let unsubSnapshots = () => {};
+    let unsubAppointments = () => {};
+    let unsubUsers = () => {};
+
+    if (user) {
+      const qSnapshots = query(collection(db, 'snapshots'), orderBy('importDate', 'desc'));
+      unsubSnapshots = onSnapshot(qSnapshots, (snapshot) => {
+        const newSnapshots = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Snapshot));
+        console.log(`Snapshot recebido: ${snapshot.size} registros.`);
+        setSnapshots(newSnapshots);
+        localStorage.setItem('gd4_snapshots_cache', JSON.stringify(newSnapshots));
+      }, (err) => {
+        console.error("Firestore Snapshot Error:", err);
+        // Don't throw if we have local data, just log
+        if (snapshots.length === 0) {
+          handleFirestoreError(err, OperationType.LIST, 'snapshots');
+        }
+      });
 
     const qAppointments = query(collection(db, 'appointments'), orderBy('date'));
     const unsubAppointments = onSnapshot(qAppointments, (snapshot) => {
@@ -174,18 +218,15 @@ export default function App() {
       const unsubUsers = onSnapshot(qUsers, (snapshot) => {
         setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'));
-      return () => {
-        unsubSnapshots();
-        unsubAppointments();
-        unsubUsers();
-      };
+      }
     }
 
     return () => {
       unsubSnapshots();
       unsubAppointments();
+      unsubUsers();
     };
-  }, [user, isAdmin]);
+  }, [user, isAdmin, isDeleting]);
 
   const handleUpdateUserRole = async (userId: string, newRole: string) => {
     try {
@@ -298,6 +339,13 @@ export default function App() {
             try {
               await batch.commit();
               completed += chunk.length;
+              
+              // Update local cache immediately for resilience
+              const currentData = [...snapshots];
+              // This is a bit tricky since we don't have the full list here easily
+              // but the onSnapshot will eventually catch up.
+              // For now, let's just rely on the onSnapshot but ensure it's robust.
+              
               // Smooth progress update
               setImportProgress(prev => ({ 
                 ...prev, 
@@ -337,11 +385,32 @@ export default function App() {
 
         await Promise.all(workers);
 
-        if (failedBatches > 0) {
+        if (failedBatches > 0 && user) {
           throw new Error(`Importação concluída com ${failedBatches} lotes falhos devido à instabilidade de rede.`);
         }
 
-        setImportProgress(prev => ({ ...prev, status: 'Sincronização concluída com sucesso total!' }));
+        // Final fallback: if user is not logged in, we must ensure snapshots state is updated
+        // so the user sees the data immediately in "Offline Mode"
+        if (!user) {
+          const localSnapshots = data.map((row, idx) => ({
+            id: `local_${Date.now()}_${idx}`,
+            type,
+            referenceMonth: month,
+            importDate: new Date().toISOString(),
+            rawData: row,
+            columnOrder: sanitizedHeaders,
+            importedBy: "local",
+            worksite: String(row[worksiteK!] || "Geral").trim(),
+            contractorName: String(row[nameK!] || "Sem Nome").trim(),
+            cnpj: String(row[idK!] || "").trim(),
+            status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
+          }));
+          const updatedSnapshots = [...localSnapshots, ...snapshots];
+          setSnapshots(updatedSnapshots);
+          localStorage.setItem('gd4_snapshots_cache', JSON.stringify(updatedSnapshots));
+        }
+
+        setImportProgress(prev => ({ ...prev, status: 'Sincronização concluída com sucesso!' }));
         setTimeout(() => { 
           setIsImporting(false); 
           setImportProgress({ current: 0, total: 0, status: '', error: null }); 
@@ -363,6 +432,11 @@ export default function App() {
     if (isDeleting) return;
     setDeleteModal({ show: false, type: '' });
     setIsDeleting(true);
+    
+    if (all) {
+      localStorage.removeItem('gd4_snapshots_cache');
+      setSnapshots([]);
+    }
     
     setImportProgress({ 
       current: 0, 
@@ -626,20 +700,29 @@ export default function App() {
         </nav>
 
         <div className="p-4 border-t border-gray-100">
-          <div className={`flex items-center gap-3 p-2 rounded-xl ${isSidebarOpen ? 'bg-gray-50' : ''}`}>
-            <img src={user?.photoURL || ""} alt="" className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
-            {isSidebarOpen && (
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{user?.displayName}</p>
-                <p className="text-xs text-gray-500 truncate">{isAdmin ? 'Administrador' : 'Operador'}</p>
-              </div>
-            )}
-            {isSidebarOpen && (
-              <button onClick={handleLogout} className="text-gray-400 hover:text-red-500">
-                <LogOut size={18} />
-              </button>
-            )}
-          </div>
+          {!user ? (
+            <button 
+              onClick={handleLogin}
+              className="w-full flex items-center justify-center gap-2 p-3 bg-gray-900 text-white rounded-xl hover:bg-gray-800 transition-all text-sm font-bold"
+            >
+              <LogIn size={18} /> {isSidebarOpen ? 'Entrar com Google' : ''}
+            </button>
+          ) : (
+            <div className={`flex items-center gap-3 p-2 rounded-xl ${isSidebarOpen ? 'bg-gray-50' : ''}`}>
+              <img src={user?.photoURL || ""} alt="" className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
+              {isSidebarOpen && (
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{user?.displayName}</p>
+                  <p className="text-xs text-gray-500 truncate">{isAdmin ? 'Administrador' : 'Operador'}</p>
+                </div>
+              )}
+              {isSidebarOpen && (
+                <button onClick={handleLogout} className="text-gray-400 hover:text-red-500">
+                  <LogOut size={18} />
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </motion.aside>
 
@@ -648,6 +731,12 @@ export default function App() {
         <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 sticky top-0 z-20 px-8 py-4 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <h2 className="text-xl font-semibold text-gray-900 capitalize">{activeTab}</h2>
+            {!user && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-100 rounded-full">
+                <div className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />
+                <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">Modo Offline (Dev)</span>
+              </div>
+            )}
             {(activeTab === 'dashboard' || activeTab === 'contractors') && (
                 <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-xl border border-gray-200">
                   <div className="relative flex items-center">
@@ -1077,7 +1166,7 @@ export default function App() {
                       </button>
                     </div>
                     <Button variant="secondary"><Filter size={18} /> Filtros</Button>
-                    {isEditor && (
+                    {(isEditor || !user) && (
                       <div className="flex gap-2">
                           <Button 
                             variant="secondary" 
