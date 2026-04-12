@@ -327,7 +327,9 @@ export default function App() {
     setImportProgress({ current: 0, total: targetSnapshots.length, status: all ? 'Iniciando limpeza total...' : 'Iniciando exclusão do mês...', error: null });
 
     try {
-      const batchSize = 400;
+      const batchSize = 450; // Using 450 for safety (limit is 500)
+      const batches = [];
+      
       for (let i = 0; i < targetSnapshots.length; i += batchSize) {
         const chunk = targetSnapshots.slice(i, i + batchSize);
         const batch = writeBatch(db);
@@ -336,9 +338,25 @@ export default function App() {
           batch.delete(doc(db, 'snapshots', s.id));
         });
 
-        await batch.commit();
-        setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, targetSnapshots.length), status: `Excluindo registros ${Math.min(i + batchSize, targetSnapshots.length)} de ${targetSnapshots.length}...` }));
+        batches.push(batch.commit().then(() => {
+          setImportProgress(prev => ({ 
+            ...prev, 
+            current: Math.min(prev.current + chunk.length, targetSnapshots.length),
+            status: `Excluindo registros... (${Math.min(prev.current + chunk.length, targetSnapshots.length)} de ${targetSnapshots.length})`
+          }));
+        }));
+
+        // Limit parallel batches to avoid overwhelming the client/network
+        if (batches.length >= 5) {
+          await Promise.all(batches);
+          batches.length = 0;
+        }
       }
+      
+      if (batches.length > 0) {
+        await Promise.all(batches);
+      }
+
       alert(all ? "TODOS os dados do sistema foram excluídos com sucesso!" : "Registros do mês excluídos com sucesso!");
     } catch (error: any) {
       console.error("Erro ao excluir snapshots:", error);
@@ -663,33 +681,33 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          {isImporting && (
+          {(isImporting || isDeleting) && (
             <motion.div 
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
               className="mb-8"
             >
-              <Card className={`p-6 border-2 ${importProgress.error ? 'border-red-200 bg-red-50' : 'border-blue-100 bg-blue-50/30'}`}>
+              <Card className={`p-6 border-2 ${importProgress.error ? 'border-red-200 bg-red-50' : isDeleting ? 'border-orange-100 bg-orange-50/30' : 'border-blue-100 bg-blue-50/30'}`}>
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white ${importProgress.error ? 'bg-red-600' : 'bg-blue-600 animate-pulse'}`}>
-                      {importProgress.error ? <AlertTriangle size={20} /> : <Plus size={20} />}
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white ${importProgress.error ? 'bg-red-600' : isDeleting ? 'bg-orange-600 animate-pulse' : 'bg-blue-600 animate-pulse'}`}>
+                      {importProgress.error ? <AlertTriangle size={20} /> : isDeleting ? <X size={20} /> : <Plus size={20} />}
                     </div>
                     <div>
-                      <h3 className={`font-bold ${importProgress.error ? 'text-red-900' : 'text-blue-900'}`}>
-                        {importProgress.error ? 'Falha na Importação' : (importProgress.status || "Processando Planilha...")}
+                      <h3 className={`font-bold ${importProgress.error ? 'text-red-900' : isDeleting ? 'text-orange-900' : 'text-blue-900'}`}>
+                        {importProgress.error ? 'Falha na Operação' : (importProgress.status || (isDeleting ? "Excluindo Dados..." : "Processando Planilha..."))}
                       </h3>
-                      <p className={`text-sm ${importProgress.error ? 'text-red-600' : 'text-blue-600'}`}>
-                        {importProgress.error ? importProgress.error : 'Enviando dados para o sistema de forma segura.'}
+                      <p className={`text-sm ${importProgress.error ? 'text-red-600' : isDeleting ? 'text-orange-600' : 'text-blue-600'}`}>
+                        {importProgress.error ? importProgress.error : isDeleting ? 'Removendo registros selecionados do banco de dados.' : 'Enviando dados para o sistema de forma segura.'}
                       </p>
                     </div>
                   </div>
                   {!importProgress.error && (
                     <div className="text-right">
-                      <span className="text-2xl font-black text-blue-900">
+                      <span className={`text-2xl font-black ${isDeleting ? 'text-orange-900' : 'text-blue-900'}`}>
                         {importProgress.total > 0 ? Math.round((importProgress.current / importProgress.total) * 100) : 0}%
                       </span>
-                      <p className="text-xs text-blue-500 font-medium uppercase tracking-wider">
+                      <p className={`text-xs font-medium uppercase tracking-wider ${isDeleting ? 'text-orange-500' : 'text-blue-500'}`}>
                         {importProgress.current} de {importProgress.total} registros
                       </p>
                     </div>
@@ -700,6 +718,7 @@ export default function App() {
                       className="bg-white border-red-200 text-red-600 hover:bg-red-50"
                       onClick={() => {
                         setIsImporting(false);
+                        setIsDeleting(false);
                         setImportProgress({ current: 0, total: 0, status: '', error: null });
                       }}
                     >
@@ -708,9 +727,9 @@ export default function App() {
                   )}
                 </div>
                 {!importProgress.error && (
-                  <div className="h-3 bg-blue-100 rounded-full overflow-hidden">
+                  <div className={`h-3 rounded-full overflow-hidden ${isDeleting ? 'bg-orange-100' : 'bg-blue-100'}`}>
                     <motion.div 
-                      className="h-full bg-blue-600"
+                      className={`h-full ${isDeleting ? 'bg-orange-600' : 'bg-blue-600'}`}
                       initial={{ width: 0 }}
                       animate={{ width: `${importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}%` }}
                       transition={{ type: "spring", bounce: 0, duration: 0.5 }}
