@@ -462,27 +462,32 @@ export default function App() {
   });
 
   const [tableWidth, setTableWidth] = useState(0);
+  const [isOverflowing, setIsOverflowing] = useState(false);
 
   useEffect(() => {
     const tableContainer = tableContainerRef.current;
     const topScroll = topScrollRef.current;
     if (!tableContainer || !topScroll) return;
 
-    const updateWidth = () => {
-      if (tableContainer.scrollWidth !== tableWidth) {
-        setTableWidth(tableContainer.scrollWidth);
-      }
+    const updateDimensions = () => {
+      const scrollWidth = tableContainer.scrollWidth;
+      const clientWidth = tableContainer.clientWidth;
+      
+      setTableWidth(scrollWidth);
+      setIsOverflowing(scrollWidth > clientWidth + 2); // 2px buffer for safety
     };
 
-    updateWidth();
-    // Small delay to ensure table is fully rendered
-    const timer = setTimeout(updateWidth, 100);
+    updateDimensions();
+    // Multiple checks to ensure we catch the render
+    const timer1 = setTimeout(updateDimensions, 100);
+    const timer2 = setTimeout(updateDimensions, 500);
+    const timer3 = setTimeout(updateDimensions, 1500);
 
-    const observer = new ResizeObserver(updateWidth);
+    const observer = new ResizeObserver(updateDimensions);
     observer.observe(tableContainer);
 
     const handleScroll = (source: HTMLDivElement, target: HTMLDivElement) => {
-      if (Math.abs(target.scrollLeft - source.scrollLeft) > 1) {
+      if (Math.abs(target.scrollLeft - source.scrollLeft) > 0.5) {
         target.scrollLeft = source.scrollLeft;
       }
     };
@@ -490,16 +495,18 @@ export default function App() {
     const onTableScroll = () => handleScroll(tableContainer, topScroll);
     const onTopScroll = () => handleScroll(topScroll, tableContainer);
 
-    tableContainer.addEventListener('scroll', onTableScroll);
-    topScroll.addEventListener('scroll', onTopScroll);
+    tableContainer.addEventListener('scroll', onTableScroll, { passive: true });
+    topScroll.addEventListener('scroll', onTopScroll, { passive: true });
 
     return () => {
-      clearTimeout(timer);
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+      clearTimeout(timer3);
       observer.disconnect();
       tableContainer.removeEventListener('scroll', onTableScroll);
       topScroll.removeEventListener('scroll', onTopScroll);
     };
-  }, [viewMode, activeTab, currentSnapshots, tableWidth, snapshotType]);
+  }, [viewMode, activeTab, currentSnapshots, snapshotType]);
 
   const totalEmpresas = currentSnapshots.length;
   const aptas = currentSnapshots.filter(s => s.status === 'APTO').length;
@@ -1289,16 +1296,20 @@ export default function App() {
                   </div>
                 ) : (
                   <Card className="overflow-hidden flex flex-col">
-                    {/* Top Scrollbar - Visible if table overflows container */}
+                    {/* Top Scrollbar - Ultra-Visible Sync Bar */}
                     <div 
                       ref={topScrollRef}
-                      className="overflow-x-auto overflow-y-hidden h-3 bg-gray-100/50 border-b border-gray-200 custom-scrollbar"
-                      style={{ display: tableWidth > (tableContainerRef.current?.clientWidth || 0) ? 'block' : 'none' }}
+                      className="overflow-x-auto overflow-y-hidden bg-blue-50 border-b border-blue-100 top-scrollbar"
+                      style={{ 
+                        height: isOverflowing ? '14px' : '0px',
+                        opacity: isOverflowing ? 1 : 0,
+                        display: isOverflowing ? 'block' : 'none'
+                      }}
                     >
                       <div style={{ width: tableWidth || '100%', height: '1px' }} />
                     </div>
 
-                    <div ref={tableContainerRef} className="overflow-x-auto custom-scrollbar">
+                    <div ref={tableContainerRef} className="overflow-x-auto custom-scrollbar bg-white">
                       <table className="w-full text-left border-collapse min-w-max">
                         <thead>
                           <tr className="bg-gray-50 border-b border-gray-100">
