@@ -155,6 +155,7 @@ export default function App() {
 
     const qSnapshots = query(collection(db, 'snapshots'), orderBy('importDate', 'desc'));
     const unsubSnapshots = onSnapshot(qSnapshots, (snapshot) => {
+      console.log(`Snapshot recebido: ${snapshot.size} registros.`);
       setSnapshots(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Snapshot)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'snapshots'));
 
@@ -227,98 +228,100 @@ export default function App() {
         }
 
         const data = XLSX.utils.sheet_to_json(ws);
+        setImportProgress({ current: 0, total: data.length, status: 'Iniciando processamento...', error: null });
 
         if (!Array.isArray(data) || data.length === 0) {
           throw new Error("A planilha parece estar vazia ou o formato não é suportado (certifique-se de que os dados estão na primeira aba).");
-        }
-
-        setImportProgress({ current: 0, total: data.length, status: 'Verificando conexão...', error: null });
-        try {
-          await addDoc(collection(db, 'system_logs'), { action: 'import_attempt', user: user?.email, timestamp: new Date().toISOString() });
-        } catch (e) {
-          throw new Error("Falha na conexão inicial. Verifique sua internet.");
         }
 
         // Helper to sanitize keys for Firestore (no dots, slashes, etc)
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
         const sanitizedHeaders = headers.map(h => sanitizeKey(h));
 
-        // Sequential processing for maximum reliability on slow connections
-        for (let i = 0; i < data.length; i++) {
-          const row = data[i];
+        const batchSize = 100; // Optimized for speed and reliability
+        const totalRecords = data.length;
+        
+        for (let i = 0; i < totalRecords; i += batchSize) {
+          const chunk = data.slice(i, i + batchSize);
+          const currentBatchNum = Math.floor(i / batchSize) + 1;
+          const totalBatches = Math.ceil(totalRecords / batchSize);
           
           setImportProgress(prev => ({ 
             ...prev, 
-            status: `Enviando registro ${i + 1} de ${data.length}...` 
+            status: `Enviando lote ${currentBatchNum} de ${totalBatches} (${i} de ${totalRecords} concluídos)...` 
           }));
           
-          const sanitizedRawData: any = {};
-          Object.keys(row).forEach(key => {
-            sanitizedRawData[sanitizeKey(key)] = row[key];
+          // Pre-process snapshots for this chunk
+          const snapshotsToUpload = chunk.map((row: any) => {
+            const sanitizedRawData: any = {};
+            Object.keys(row).forEach(key => {
+              sanitizedRawData[sanitizeKey(key)] = row[key];
+            });
+
+            const getVal = (row: any, keys: string[]) => {
+              const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
+              return foundKey ? row[foundKey] : null;
+            };
+
+            const nameKeys = type === 'COMPANY_DOCS' 
+              ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
+              : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
+            
+            const idKeys = type === 'COMPANY_DOCS'
+              ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
+              : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ'];
+
+            const statusKeys = ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR'];
+            const worksiteKeys = ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO'];
+
+            let contractorName = String(getVal(row, nameKeys) || "");
+            if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined" || contractorName === "") {
+              const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL', 'UF', 'CNPJ', 'CPF'].includes(k.toUpperCase()));
+              if (firstStringKey) contractorName = row[firstStringKey];
+            }
+
+            return {
+              type: type,
+              referenceMonth: month,
+              importDate: new Date().toISOString(),
+              rawData: sanitizedRawData,
+              columnOrder: sanitizedHeaders,
+              importedBy: user?.uid || "anonymous",
+              worksite: String(getVal(row, worksiteKeys) || "Geral"),
+              contractorName: contractorName || "Sem Nome",
+              cnpj: String(getVal(row, idKeys) || ""),
+              status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
+            };
           });
 
-          const getVal = (row: any, keys: string[]) => {
-            const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
-            return foundKey ? row[foundKey] : null;
-          };
-
-          const nameKeys = type === 'COMPANY_DOCS' 
-            ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
-            : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
-          
-          const idKeys = type === 'COMPANY_DOCS'
-            ? ['CNPJ', 'CNPJ_EMPRESA', 'IDENTIFICADOR', 'CPF/CNPJ', 'CNPJ/CPF']
-            : ['CPF', 'IDENTIDADE', 'MATRÍCULA', 'ID', 'CPF/CNPJ'];
-
-          const statusKeys = ['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR'];
-          const worksiteKeys = ['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO'];
-
-          let contractorName = String(getVal(row, nameKeys) || "");
-          if (!contractorName || contractorName === "Sem Nome" || contractorName === "undefined" || contractorName === "") {
-            const firstStringKey = Object.keys(row).find(k => typeof row[k] === 'string' && row[k].length > 3 && !['STATUS', 'SITUAÇÃO', 'OBRA', 'LOCAL', 'UF', 'CNPJ', 'CPF'].includes(k.toUpperCase()));
-            if (firstStringKey) contractorName = row[firstStringKey];
-          }
-
-          const snapshot = {
-            type: type,
-            referenceMonth: month,
-            importDate: new Date().toISOString(),
-            rawData: sanitizedRawData,
-            columnOrder: sanitizedHeaders,
-            importedBy: user?.uid || "anonymous",
-            worksite: String(getVal(row, worksiteKeys) || "Geral"),
-            contractorName: contractorName || "Sem Nome",
-            cnpj: String(getVal(row, idKeys) || ""),
-            status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
-          };
-
-          // Individual retry logic for each document
+          // Retry logic for each batch
           let retries = 3;
           let success = false;
           while (retries > 0 && !success) {
             try {
-              const addPromise = addDoc(collection(db, 'snapshots'), snapshot);
+              const batch = writeBatch(db); // ALWAYS fresh batch
+              snapshotsToUpload.forEach(snapshot => {
+                const docRef = doc(collection(db, 'snapshots'));
+                batch.set(docRef, snapshot);
+              });
+
+              const commitPromise = batch.commit();
               const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error(`O servidor demorou muito para responder no registro ${i + 1}. Verifique sua conexão.`)), 60000)
+                setTimeout(() => reject(new Error("O servidor demorou muito para responder. Verifique sua internet.")), 40000)
               );
-              await Promise.race([addPromise, timeoutPromise]);
+              await Promise.race([commitPromise, timeoutPromise]);
               success = true;
             } catch (err: any) {
-              console.warn(`Falha no registro ${i + 1}, tentativa ${4 - retries}:`, err);
+              console.warn(`Lote ${currentBatchNum} falhou, tentativa ${4 - retries}:`, err);
               retries--;
-              if (retries === 0) {
-                const errorMsg = err.message?.includes('permission-denied') 
-                  ? "Erro de Permissão: Você não tem autorização para salvar dados."
-                  : `Erro de Conexão: ${err.message || "O servidor não respondeu a tempo."}`;
-                throw new Error(errorMsg);
-              }
+              if (retries === 0) throw err;
               await new Promise(resolve => setTimeout(resolve, 2000));
             }
           }
 
-          setImportProgress(prev => ({ ...prev, current: i + 1 }));
-          // Small delay between records for stability
-          await new Promise(resolve => setTimeout(resolve, 300));
+          setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, totalRecords) }));
+          // Small delay to keep UI responsive
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
 
         setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
@@ -871,6 +874,10 @@ export default function App() {
                       </button>
                     </div>
                     <div className="flex gap-2 w-full md:w-auto justify-end items-center">
+                      <div className={`hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold ${navigator.onLine ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${navigator.onLine ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                        {navigator.onLine ? 'ONLINE' : 'OFFLINE'}
+                      </div>
                       <Button variant="secondary" onClick={() => window.location.reload()}>
                         <Clock size={16} className="mr-2" /> Sincronizar Agora
                       </Button>
