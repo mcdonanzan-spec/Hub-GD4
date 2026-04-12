@@ -274,10 +274,18 @@ export default function App() {
           const snapshotsToUpload = chunk.map((row: any) => {
             const sanitizedRawData: any = {};
             rowKeys.forEach(key => {
-              sanitizedRawData[sanitizeKey(key)] = row[key];
+              const val = row[key];
+              // Firestore does not support 'undefined'. Replace with null or empty string.
+              sanitizedRawData[sanitizeKey(key)] = val === undefined ? null : val;
             });
 
-            let contractorName = String(nameKey ? row[nameKey] : "");
+            const getSafeVal = (key: string | undefined) => {
+              if (!key) return null;
+              const val = row[key];
+              return val === undefined ? null : val;
+            };
+
+            let contractorName = String(getSafeVal(nameKey) || "");
             if (!contractorName || contractorName === "undefined" || contractorName === "") {
               const firstStringKey = rowKeys.find(k => typeof row[k] === 'string' && row[k].length > 3);
               if (firstStringKey) contractorName = row[firstStringKey];
@@ -290,10 +298,10 @@ export default function App() {
               rawData: sanitizedRawData,
               columnOrder: sanitizedHeaders,
               importedBy: user?.uid || "anonymous",
-              worksite: String(worksiteKey ? row[worksiteKey] : "Geral"),
+              worksite: String(getSafeVal(worksiteKey) || "Geral"),
               contractorName: contractorName || "Sem Nome",
-              cnpj: String(idKey ? row[idKey] : ""),
-              status: String(statusKey ? row[statusKey] : "PENDENTE").toUpperCase(),
+              cnpj: String(getSafeVal(idKey) || ""),
+              status: String(getSafeVal(statusKey) || "PENDENTE").toUpperCase(),
             };
           });
 
