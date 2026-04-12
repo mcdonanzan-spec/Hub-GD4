@@ -19,7 +19,8 @@ import {
   ChevronRight,
   ChevronLeft,
   Filter,
-  MoreVertical
+  MoreVertical,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -46,6 +47,8 @@ import { getAIAssistance, suggestTasks } from './services/aiService';
 import ReactMarkdown from 'react-markdown';
 import { seedDatabase } from './seed';
 import * as XLSX from 'xlsx';
+
+import { DynamicAnalytics } from './components/DynamicAnalytics';
 
 // --- Types ---
 interface Snapshot {
@@ -76,13 +79,13 @@ interface Appointment {
 
 // --- Components ---
 
-const Card = ({ children, className = "" }: { children: React.ReactNode, className?: string }) => (
+export const Card = ({ children, className = "" }: { children: React.ReactNode, className?: string }) => (
   <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden ${className}`}>
     {children}
   </div>
 );
 
-const Button = ({ children, onClick, variant = 'primary', className = "", disabled = false }: any) => {
+export const Button = ({ children, onClick, variant = 'primary', className = "", disabled = false }: any) => {
   const variants: any = {
     primary: "bg-gray-900 text-white hover:bg-gray-800",
     secondary: "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50",
@@ -136,6 +139,7 @@ export default function App() {
   const [deleteModal, setDeleteModal] = useState({ show: false, type: '' });
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '', error: null as string | null });
   const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
+  const [selectedSnapshot, setSelectedSnapshot] = useState<Snapshot | null>(null);
   
   const tableContainerRef = React.useRef<HTMLDivElement>(null);
   const topScrollRef = React.useRef<HTMLDivElement>(null);
@@ -146,6 +150,7 @@ export default function App() {
     showPie: true,
     showBar: true,
     showCritical: true,
+    showDynamic: false,
     layout: 'grid' as 'grid' | 'stack'
   });
 
@@ -759,6 +764,76 @@ export default function App() {
             )}
           </AnimatePresence>
 
+          {/* Details Modal */}
+          <AnimatePresence>
+            {selectedSnapshot && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                  className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+                >
+                  <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 bg-gray-900 text-white rounded-2xl flex items-center justify-center">
+                        {selectedSnapshot.type === 'COMPANY_DOCS' ? <Users size={24} /> : <User size={24} />}
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-900">{selectedSnapshot.contractorName}</h3>
+                        <p className="text-xs text-gray-500 font-medium uppercase tracking-widest">{selectedSnapshot.type === 'COMPANY_DOCS' ? 'Empresa' : 'Colaborador'}</p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => setSelectedSnapshot(null)}
+                      className="p-2 hover:bg-gray-200 rounded-full text-gray-400 transition-colors"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Status Atual</label>
+                        <div><Badge status={selectedSnapshot.status as any} /></div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Obra / Local</label>
+                        <p className="text-sm font-bold text-gray-900">{selectedSnapshot.worksite}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">{selectedSnapshot.type === 'COMPANY_DOCS' ? 'CNPJ' : 'CPF/ID'}</label>
+                        <p className="text-sm font-bold text-gray-900 font-mono">{selectedSnapshot.cnpj || 'Não informado'}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Mês de Referência</label>
+                        <p className="text-sm font-bold text-gray-900">{selectedSnapshot.referenceMonth}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <h4 className="text-xs font-black text-gray-900 uppercase tracking-widest border-b border-gray-100 pb-2">Todos os Dados Importados</h4>
+                      <div className="grid grid-cols-1 gap-3">
+                        {(selectedSnapshot.columnOrder || Object.keys(selectedSnapshot.rawData || {})).map(key => (
+                          <div key={key} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100 group hover:border-blue-200 transition-all">
+                            <span className="text-xs font-bold text-gray-500 uppercase">{key.replace(/_/g, ' ')}</span>
+                            <span className="text-sm font-black text-gray-900 text-right">{String(selectedSnapshot.rawData[key] || '---')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-6 border-t border-gray-100 bg-gray-50 flex gap-3">
+                    <Button className="flex-1" onClick={() => setSelectedSnapshot(null)}>Fechar Detalhes</Button>
+                    <Button variant="secondary" className="flex-1"><Download size={18} /> Exportar Ficha</Button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
           {(isImporting || isDeleting) && (
             <motion.div 
               initial={{ opacity: 0, y: -20 }}
@@ -895,6 +970,12 @@ export default function App() {
                       >
                         Lista Crítica
                       </button>
+                      <button 
+                        onClick={() => setDashboardConfig(prev => ({ ...prev, showDynamic: !prev.showDynamic }))}
+                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showDynamic ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-blue-600 border-blue-200 hover:border-blue-300'}`}
+                      >
+                        Análise Dinâmica (Tabela/Gráfico)
+                      </button>
                     </div>
                     <div className="flex gap-2 w-full md:w-auto justify-end items-center">
                       <div className={`hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold ${navigator.onLine ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
@@ -925,6 +1006,19 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+
+                {/* Dynamic Analytics Section */}
+                {dashboardConfig.showDynamic && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mb-12"
+                  >
+                    <DynamicAnalytics data={currentSnapshots} type={snapshotType} />
+                  </motion.div>
+                )}
+
                 {/* Stats Grid */}
                 {dashboardConfig.showStats && (
                   <div className={`grid gap-6 ${dashboardConfig.layout === 'grid' ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4' : 'grid-cols-1'}`}>
@@ -1179,7 +1273,10 @@ export default function App() {
                         <p className="text-sm text-gray-500 mb-4">{s.worksite}</p>
                         <div className="pt-4 border-t border-gray-50 flex items-center justify-between">
                           <span className="text-xs text-gray-400">CNPJ: {s.cnpj || '---'}</span>
-                          <button className="text-gray-900 font-semibold text-sm flex items-center gap-1">
+                          <button 
+                            onClick={() => setSelectedSnapshot(s)}
+                            className="text-gray-900 font-semibold text-sm flex items-center gap-1 hover:text-blue-600 transition-colors"
+                          >
                             Ver Dados <ChevronRight size={16} />
                           </button>
                         </div>
@@ -1229,6 +1326,14 @@ export default function App() {
                                 {columns.map((key, i) => (
                                   <td key={i} className="px-6 py-4 text-gray-400 text-xs truncate max-w-[200px]">{String(s.rawData[key] || '')}</td>
                                 ))}
+                                <td className="px-6 py-4 text-right sticky right-0 bg-white group-hover:bg-gray-50 z-10">
+                                  <button 
+                                    onClick={() => setSelectedSnapshot(s)}
+                                    className="p-2 hover:bg-gray-200 rounded-lg text-blue-600 font-bold text-xs flex items-center gap-1"
+                                  >
+                                    DETALHES <ChevronRight size={14} />
+                                  </button>
+                                </td>
                               </tr>
                             );
                           })}
