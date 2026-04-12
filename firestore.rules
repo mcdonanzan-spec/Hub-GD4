@@ -52,18 +52,10 @@ service cloud.firestore {
 
     function isEditor() {
       return isAuthenticated() && 
-        (isAdmin() || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']));
+        (request.auth.token.email == "mcdonanzan@gmail.com" || 
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'editor']));
     }
-
-    function isValidDateString(dateStr) {
-      return dateStr is string &&
-        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
-    }
-
-    // ===============================================================
-    // Domain Validators
-    // ===============================================================
 
     function isValidSnapshot(data) {
       return data.type in ['COMPANY_DOCS', 'EMPLOYEE_DOCS'] &&
@@ -72,14 +64,10 @@ service cloud.firestore {
              data.importedBy == request.auth.uid;
     }
 
-    // ===============================================================
-    // Rules
-    // ===============================================================
-
     match /snapshots/{snapshotId} {
       allow read: if isAuthenticated();
       allow create: if isEditor() && isValidSnapshot(request.resource.data);
-      allow update, delete: if isAdmin();
+      allow update, delete: if isAuthenticated() && (request.auth.token.email == "mcdonanzan@gmail.com" || isAdmin());
     }
 
     match /appointments/{appointmentId} {

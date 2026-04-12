@@ -40,7 +40,7 @@ import { format, startOfWeek, addDays, startOfMonth, endOfMonth, eachDayOfInterv
 import { ptBR } from 'date-fns/locale';
 import { auth, db, googleProvider, OperationType, handleFirestoreError } from './firebase';
 import { signInWithPopup, signOut } from 'firebase/auth';
-import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc, deleteDoc, writeBatch, where, getDocs } from 'firebase/firestore';
 import { useAuth } from './AuthContext';
 import { getAIAssistance, suggestTasks } from './services/aiService';
 import ReactMarkdown from 'react-markdown';
@@ -324,68 +324,82 @@ export default function App() {
     setDeleteModal({ show: false, type: '' });
     setIsDeleting(true);
     
-    // Capture the IDs immediately to avoid issues with state changes during the process
-    const targetIds = all 
-      ? snapshots.map(s => s.id) 
-      : currentSnapshots.map(s => s.id);
-    
-    const total = targetIds.length;
-    
-    if (total === 0) {
-      setIsDeleting(false);
-      return;
-    }
-
-    console.log(`Iniciando exclusão de ${total} registros...`);
-
     setImportProgress({ 
       current: 0, 
-      total: total, 
-      status: 'Preparando limpeza...', 
+      total: 100, // Placeholder until we count
+      status: 'Iniciando limpeza profunda...', 
       error: null 
     });
 
     try {
-      const chunkSize = 20; // Small parallel chunks
+      // Specialist approach: Fetch IDs directly from server to ensure we have the latest list
+      // and bypass any client-side filtering issues
+      const q = all 
+        ? collection(db, 'snapshots')
+        : query(collection(db, 'snapshots'), where('referenceMonth', '==', selectedMonth), where('type', '==', snapshotType));
+      
+      const querySnapshot = await getDocs(q);
+      const targetIds = querySnapshot.docs.map(doc => doc.id);
+      const total = targetIds.length;
+
+      if (total === 0) {
+        setImportProgress({ current: 0, total: 0, status: 'Nenhum registro encontrado para excluir.', error: null });
+        setTimeout(() => setIsDeleting(false), 2000);
+        return;
+      }
+
+      setImportProgress({ 
+        current: 0, 
+        total: total, 
+        status: `Localizados ${total} registros. Iniciando remoção...`, 
+        error: null 
+      });
+
+      const chunkSize = 15; // Smaller chunks for high reliability
       let processed = 0;
       
       for (let i = 0; i < targetIds.length; i += chunkSize) {
         const chunk = targetIds.slice(i, i + chunkSize);
         
-        // Delete this chunk in parallel using individual deleteDoc calls
-        // This is often more reliable than batches for large volumes on unstable connections
-        await Promise.all(chunk.map(id => 
-          deleteDoc(doc(db, 'snapshots', id)).catch(err => {
-            console.error(`Erro ao excluir documento ${id}:`, err);
-            // Continue even if one fails
-          })
-        ));
+        // Delete this chunk in parallel
+        await Promise.all(chunk.map(async (id) => {
+          try {
+            await deleteDoc(doc(db, 'snapshots', id));
+          } catch (err: any) {
+            console.error(`Erro ao excluir ${id}:`, err);
+            // If we hit a permission error, we want to know
+            if (err.message?.includes('permission-denied')) {
+              throw new Error("Permissão negada pelo servidor. Por favor, verifique se você é o administrador.");
+            }
+          }
+        }));
         
         processed += chunk.length;
         
         setImportProgress(prev => ({ 
           ...prev, 
           current: processed,
-          status: `Limpando... (${processed} de ${total})`
+          status: `Limpando base de dados... (${processed} de ${total})`
         }));
         
-        // Very small delay to keep the UI responsive
-        await new Promise(resolve => setTimeout(resolve, 10));
+        // Small delay to keep UI responsive
+        await new Promise(resolve => setTimeout(resolve, 20));
       }
 
-      setImportProgress(prev => ({ ...prev, status: 'Limpeza concluída! Recarregando...' }));
+      setImportProgress(prev => ({ ...prev, status: 'Limpeza concluída com sucesso! Sincronizando...' }));
       
-      // Force a small delay before finishing to let Firestore catch up
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // Wait for Firestore to propagate changes
+      await new Promise(resolve => setTimeout(resolve, 2000));
       
-      window.location.reload(); // Force reload to ensure clean state
+      // Force reload to ensure everything is fresh
+      window.location.reload();
       
     } catch (error: any) {
-      console.error("Erro crítico na exclusão:", error);
+      console.error("Erro Crítico na Limpeza:", error);
       setImportProgress(prev => ({ 
         ...prev, 
-        status: 'Erro na exclusão',
-        error: "Falha ao limpar dados. Por favor, verifique sua conexão e tente novamente. Detalhes: " + (error.message || "Erro desconhecido")
+        status: 'Falha na Limpeza',
+        error: "Erro: " + (error.message || "Não foi possível completar a limpeza. Tente recarregar a página.")
       }));
       setIsDeleting(false);
     }
@@ -803,6 +817,9 @@ export default function App() {
                       </button>
                     </div>
                     <div className="flex gap-2 w-full md:w-auto justify-end items-center">
+                      <Button variant="secondary" onClick={() => window.location.reload()}>
+                        <Clock size={16} className="mr-2" /> Sincronizar Agora
+                      </Button>
                       <Button variant="secondary" onClick={() => setDashboardConfig(prev => ({ ...prev, layout: prev.layout === 'grid' ? 'stack' : 'grid' }))}>
                         {dashboardConfig.layout === 'grid' ? <><List size={16} className="mr-2" /> Lista</> : <><Grid size={16} className="mr-2" /> Grade</>}
                       </Button>
