@@ -238,26 +238,31 @@ export default function App() {
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
         const sanitizedHeaders = headers.map(h => sanitizeKey(h));
 
-        const batchSize = 400; // Firestore limit is 500, using 400 for safety
-        for (let i = 0; i < data.length; i += batchSize) {
-          const chunk = data.slice(i, i + batchSize);
-          setImportProgress(prev => ({ ...prev, status: `Enviando lote ${Math.floor(i / batchSize) + 1} de ${Math.ceil(data.length / batchSize)}...` }));
+        const chunkSize = 20; // Small parallel chunks for maximum reliability
+        for (let i = 0; i < data.length; i += chunkSize) {
+          const chunk = data.slice(i, i + chunkSize);
+          const currentBatchNum = Math.floor(i / chunkSize) + 1;
+          const totalChunks = Math.ceil(data.length / chunkSize);
           
-          const batch = writeBatch(db);
+          setImportProgress(prev => ({ 
+            ...prev, 
+            status: `Enviando dados... (Lote ${currentBatchNum} de ${totalChunks})` 
+          }));
           
-          chunk.forEach((row: any) => {
-            // Sanitize all keys in the row object
-            const sanitizedRawData: any = {};
-            Object.keys(row).forEach(key => {
-              sanitizedRawData[sanitizeKey(key)] = row[key];
-            });
+          // Process this chunk in parallel using individual addDoc calls
+          // This avoids batch size limits and is more resilient to individual failures
+          await Promise.all(chunk.map(async (row: any) => {
+            try {
+              const sanitizedRawData: any = {};
+              Object.keys(row).forEach(key => {
+                sanitizedRawData[sanitizeKey(key)] = row[key];
+              });
 
               const getVal = (row: any, keys: string[]) => {
                 const foundKey = Object.keys(row).find(k => keys.includes(k.toUpperCase().trim()));
                 return foundKey ? row[foundKey] : null;
               };
 
-              // Context-aware mapping
               const nameKeys = type === 'COMPANY_DOCS' 
                 ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'RAZÃO', 'FORNECEDOR', 'NOME DA EMPRESA']
                 : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'TRABALHADOR', 'NOME COMPLETO'];
@@ -287,19 +292,18 @@ export default function App() {
                 cnpj: String(getVal(row, idKeys) || ""),
                 status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
               };
-            
-            const docRef = doc(collection(db, 'snapshots'));
-            batch.set(docRef, snapshot);
-          });
+              
+              await addDoc(collection(db, 'snapshots'), snapshot);
+            } catch (err) {
+              console.error("Erro ao importar linha:", err);
+              // We continue with other rows
+            }
+          }));
 
-          try {
-            await batch.commit();
-          } catch (batchErr: any) {
-            console.error("Erro ao processar lote:", batchErr);
-            throw new Error(`Erro no servidor ao processar lote ${Math.floor(i / batchSize) + 1}: ${batchErr.message}`);
-          }
+          setImportProgress(prev => ({ ...prev, current: Math.min(i + chunkSize, data.length) }));
           
-          setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, data.length) }));
+          // Small delay to keep UI responsive
+          await new Promise(resolve => setTimeout(resolve, 10));
         }
 
         setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
@@ -751,7 +755,7 @@ export default function App() {
                       </p>
                     </div>
                   )}
-                  {importProgress.error && (
+                  {importProgress.error ? (
                     <Button 
                       variant="secondary" 
                       className="bg-white border-red-200 text-red-600 hover:bg-red-50"
@@ -762,6 +766,21 @@ export default function App() {
                       }}
                     >
                       Fechar e Tentar Novamente
+                    </Button>
+                  ) : (
+                    <Button 
+                      variant="ghost" 
+                      className="text-xs text-gray-400 hover:text-gray-600"
+                      onClick={() => {
+                        if (window.confirm("Deseja realmente cancelar a operação atual? Isso pode deixar os dados incompletos.")) {
+                          setIsImporting(false);
+                          setIsDeleting(false);
+                          setImportProgress({ current: 0, total: 0, status: '', error: null });
+                          window.location.reload();
+                        }
+                      }}
+                    >
+                      Cancelar
                     </Button>
                   )}
                 </div>
@@ -1044,14 +1063,14 @@ export default function App() {
                     <Button variant="secondary"><Filter size={18} /> Filtros</Button>
                     {isEditor && (
                       <div className="flex gap-2">
-                        <Button 
-                          variant="secondary" 
-                          className="bg-red-50 border-red-100 text-red-600 hover:bg-red-100"
-                          onClick={() => setDeleteModal({ show: true, type: snapshotType })}
-                          disabled={isDeleting || currentSnapshots.length === 0}
-                        >
-                          <X size={18} /> Limpar Mês
-                        </Button>
+                          <Button 
+                            variant="secondary" 
+                            className="bg-red-50 border-red-100 text-red-600 hover:bg-red-100"
+                            onClick={() => setDeleteModal({ show: true, type: snapshotType })}
+                            disabled={isDeleting || currentSnapshots.length === 0}
+                          >
+                            <X size={18} /> Limpar Dados do Mês
+                          </Button>
                         <div className="relative">
                           <input 
                             type="file" 
