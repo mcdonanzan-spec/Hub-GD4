@@ -238,7 +238,7 @@ export default function App() {
         const sanitizeKey = (key: string) => key.replace(/[\.\#\$\[\]\/]/g, '_');
         const sanitizedHeaders = headers.map(h => sanitizeKey(h));
 
-        const batchSize = 50; // Use small batches for reliability
+        const batchSize = 40; // Slightly smaller for better stability
         for (let i = 0; i < data.length; i += batchSize) {
           const chunk = data.slice(i, i + batchSize);
           const currentBatchNum = Math.floor(i / batchSize) + 1;
@@ -249,9 +249,8 @@ export default function App() {
             status: `Enviando lote ${currentBatchNum} de ${totalBatches}...` 
           }));
           
-          const batch = writeBatch(db);
-          
-          chunk.forEach((row: any) => {
+          // Pre-process snapshots for this chunk
+          const snapshotsToUpload = chunk.map((row: any) => {
             const sanitizedRawData: any = {};
             Object.keys(row).forEach(key => {
               sanitizedRawData[sanitizeKey(key)] = row[key];
@@ -279,7 +278,7 @@ export default function App() {
               if (firstStringKey) contractorName = row[firstStringKey];
             }
 
-            const snapshot: any = {
+            return {
               type: type,
               referenceMonth: month,
               importDate: new Date().toISOString(),
@@ -291,9 +290,6 @@ export default function App() {
               cnpj: String(getVal(row, idKeys) || ""),
               status: String(getVal(row, statusKeys) || "PENDENTE").toUpperCase(),
             };
-            
-            const docRef = doc(collection(db, 'snapshots'));
-            batch.set(docRef, snapshot);
           });
 
           // Retry logic for each batch
@@ -301,6 +297,12 @@ export default function App() {
           let success = false;
           while (retries > 0 && !success) {
             try {
+              const batch = writeBatch(db); // Create a FRESH batch for each attempt
+              snapshotsToUpload.forEach(snapshot => {
+                const docRef = doc(collection(db, 'snapshots'));
+                batch.set(docRef, snapshot);
+              });
+
               const commitPromise = batch.commit();
               const timeoutPromise = new Promise((_, reject) => 
                 setTimeout(() => reject(new Error("Timeout")), 30000)
@@ -308,14 +310,15 @@ export default function App() {
               await Promise.race([commitPromise, timeoutPromise]);
               success = true;
             } catch (err) {
+              console.warn(`Lote ${currentBatchNum} falhou, tentando novamente... (${retries-1} tentativas restantes)`, err);
               retries--;
               if (retries === 0) throw err;
-              await new Promise(resolve => setTimeout(resolve, 1000));
+              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait longer between retries
             }
           }
 
           setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, data.length) }));
-          await new Promise(resolve => setTimeout(resolve, 200));
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
 
         setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
@@ -504,6 +507,10 @@ export default function App() {
     setIsAiLoading(false);
   };
 
+  useEffect(() => {
+    console.log("App mounted, user:", user?.email);
+  }, [user]);
+
   if (loading) return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
@@ -588,10 +595,10 @@ export default function App() {
 
         <div className="p-4 border-t border-gray-100">
           <div className={`flex items-center gap-3 p-2 rounded-xl ${isSidebarOpen ? 'bg-gray-50' : ''}`}>
-            <img src={user.photoURL || ""} alt="" className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
+            <img src={user?.photoURL || ""} alt="" className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
             {isSidebarOpen && (
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{user.displayName}</p>
+                <p className="text-sm font-medium truncate">{user?.displayName}</p>
                 <p className="text-xs text-gray-500 truncate">{isAdmin ? 'Administrador' : 'Operador'}</p>
               </div>
             )}
@@ -601,11 +608,6 @@ export default function App() {
               </button>
             )}
           </div>
-          {isSidebarOpen && (
-            <div className="mt-2 text-[8px] text-gray-300 text-center uppercase tracking-widest">
-              v2.1.0-turbo • {new Date().toLocaleTimeString()}
-            </div>
-          )}
         </div>
       </motion.aside>
 
@@ -624,8 +626,8 @@ export default function App() {
                       className="bg-transparent border-none text-[11px] font-bold focus:ring-0 cursor-pointer pl-7 pr-4 py-1 appearance-none"
                     >
                       <option value="ALL">Todos os Períodos</option>
-                      {Array.from(new Set(snapshots.map(s => s.referenceMonth))).sort().reverse().map(m => (
-                        <option key={m} value={m}>{m}</option>
+                      {Array.from(new Set(snapshots.map(s => s.referenceMonth).filter(Boolean))).sort().reverse().map(m => (
+                        <option key={m as string} value={m as string}>{m as string}</option>
                       ))}
                       {!snapshots.some(s => s.referenceMonth === format(new Date(), 'yyyy-MM')) && (
                         <option value={format(new Date(), 'yyyy-MM')}>{format(new Date(), 'yyyy-MM')}</option>

@@ -18,7 +18,19 @@ const sampleAppointments = [
 export async function seedDatabase() {
   try {
     for (const c of sampleContractors) {
-      await addDoc(collection(db, 'contractors'), c);
+      const snapshot = {
+        type: 'COMPANY_DOCS',
+        referenceMonth: new Date().toISOString().slice(0, 7),
+        importDate: new Date().toISOString(),
+        rawData: c,
+        columnOrder: Object.keys(c),
+        importedBy: 'system',
+        worksite: c.worksite,
+        contractorName: c.name,
+        cnpj: c.cnpj,
+        status: c.status
+      };
+      await addDoc(collection(db, 'snapshots'), snapshot);
     }
     for (const a of sampleAppointments) {
       await addDoc(collection(db, 'appointments'), a);

@@ -26,29 +26,57 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      console.log("Auth state changed:", user?.email);
       setUser(user);
       if (user) {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-          setRole(userDoc.data().role || 'viewer');
-        } else {
-          const isDefaultAdmin = user.email === 'mcdonanzan@gmail.com';
-          const initialRole = isDefaultAdmin ? 'admin' : 'viewer';
-          await setDoc(doc(db, 'users', user.uid), {
-            email: user.email,
-            displayName: user.displayName,
-            role: initialRole,
-            createdAt: new Date().toISOString()
-          });
-          setRole(initialRole);
+        try {
+          console.log("Fetching user doc for:", user.uid);
+          // Use a timeout for the getDoc call
+          const userDocPromise = getDoc(doc(db, 'users', user.uid));
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Timeout fetching user doc")), 5000)
+          );
+          
+          const userDoc = await Promise.race([userDocPromise, timeoutPromise]) as any;
+          
+          if (userDoc.exists()) {
+            console.log("User doc found, role:", userDoc.data().role);
+            setRole(userDoc.data().role || 'viewer');
+          } else {
+            console.log("User doc not found, creating default...");
+            const isDefaultAdmin = user.email === 'mcdonanzan@gmail.com';
+            const initialRole = isDefaultAdmin ? 'admin' : 'viewer';
+            await setDoc(doc(db, 'users', user.uid), {
+              email: user.email,
+              displayName: user.displayName,
+              role: initialRole,
+              createdAt: new Date().toISOString()
+            });
+            setRole(initialRole);
+          }
+        } catch (err) {
+          console.error("Error in AuthContext Firestore calls:", err);
+          // Fallback for the default admin even if Firestore fails
+          if (user.email === 'mcdonanzan@gmail.com') {
+            setRole('admin');
+          }
         }
       } else {
         setRole('viewer');
       }
       setLoading(false);
+      console.log("Auth loading finished");
     });
 
-    return () => unsubscribe();
+    // Global safety timeout to ensure the app eventually shows something
+    const timer = setTimeout(() => {
+      setLoading(false);
+    }, 8000);
+
+    return () => {
+      unsubscribe();
+      clearTimeout(timer);
+    };
   }, []);
 
   const isAdmin = role === 'admin';
