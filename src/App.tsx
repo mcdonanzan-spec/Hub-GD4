@@ -346,36 +346,45 @@ export default function App() {
     });
 
     try {
-      const batchSize = 100; // Smaller batches for better reliability
+      const batchSize = 50; // Even smaller batches for maximum stability
       let processed = 0;
       
       for (let i = 0; i < targetIds.length; i += batchSize) {
         const chunk = targetIds.slice(i, i + batchSize);
-        const batch = writeBatch(db);
         
-        chunk.forEach(id => {
-          batch.delete(doc(db, 'snapshots', id));
-        });
+        try {
+          const batch = writeBatch(db);
+          chunk.forEach(id => {
+            batch.delete(doc(db, 'snapshots', id));
+          });
 
-        // Use a timeout to prevent hanging indefinitely
-        const commitPromise = batch.commit();
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("Tempo limite excedido ao comunicar com o banco de dados.")), 15000)
-        );
+          const commitPromise = batch.commit();
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Timeout")), 10000)
+          );
 
-        await Promise.race([commitPromise, timeoutPromise]);
+          await Promise.race([commitPromise, timeoutPromise]);
+        } catch (batchError) {
+          console.warn("Batch failed, falling back to individual deletes for this chunk", batchError);
+          // Fallback: Delete individually if batch fails
+          for (const id of chunk) {
+            try {
+              await deleteDoc(doc(db, 'snapshots', id));
+            } catch (singleError) {
+              console.error(`Failed to delete doc ${id}`, singleError);
+            }
+          }
+        }
         
         processed += chunk.length;
         
-        // Update progress
         setImportProgress(prev => ({ 
           ...prev, 
           current: processed,
           status: `Limpando... (${processed} de ${total})`
         }));
         
-        // Small delay to prevent rate limiting and keep UI responsive
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 30));
       }
 
       setImportProgress(prev => ({ ...prev, status: 'Limpeza concluída!' }));
