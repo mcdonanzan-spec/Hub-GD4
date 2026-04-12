@@ -209,24 +209,29 @@ export default function App() {
     
     const reader = new FileReader();
     reader.onload = async (evt) => {
-      console.log("[Professional Import] Arquivo lido. Iniciando processamento de alta velocidade...");
+      console.log("[Professional Import] Arquivo carregado na memória. Iniciando processamento...");
       try {
-        const bstr = evt.target?.result;
-        if (!bstr) throw new Error("Falha na leitura do arquivo.");
+        const arrayBuffer = evt.target?.result;
+        if (!arrayBuffer) throw new Error("Falha na leitura do arquivo.");
+
+        setImportProgress({ current: 0, total: 0, status: 'Processando Excel (Aguarde)...', error: null });
+        await new Promise(resolve => setTimeout(resolve, 100));
 
         // Optimized reading: Use a worker-like approach by wrapping in a promise to prevent UI lock
         const data = await new Promise<any[]>((resolve, reject) => {
           try {
-            const wb = XLSX.read(bstr, { type: 'binary', cellDates: true, cellNF: false, cellText: false });
+            const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
             const ws = wb.Sheets[wb.SheetNames[0]];
-            resolve(XLSX.utils.sheet_to_json(ws, { defval: null }));
+            const json = XLSX.utils.sheet_to_json(ws, { defval: null });
+            resolve(json);
           } catch (e) { reject(e); }
         });
 
-        if (!data || data.length === 0) throw new Error("Planilha vazia.");
+        if (!data || data.length === 0) throw new Error("Planilha vazia ou formato inválido.");
 
         const totalRecords = data.length;
-        setImportProgress({ current: 0, total: totalRecords, status: 'Preparando motor de alta velocidade...', error: null });
+        console.log(`[Professional Import] ${totalRecords} registros detectados. Iniciando sincronização...`);
+        setImportProgress({ current: 0, total: totalRecords, status: 'Iniciando sincronização com o servidor...', error: null });
 
         // Pre-calculate mappings to avoid overhead in the loop
         const rowKeys = Object.keys(data[0] || {});
@@ -239,16 +244,21 @@ export default function App() {
         const statusK = findK(['STATUS', 'SITUAÇÃO', 'ESTADO']);
         const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']);
 
-        // Professional Strategy: Large batches + High Concurrency
-        const BATCH_SIZE = 250; 
-        const CONCURRENCY = 8; 
+        // Professional Strategy: Optimized batches for Firestore
+        const BATCH_SIZE = 100; 
+        const CONCURRENCY = 4; 
         let completed = 0;
 
         const uploadBatch = async (chunk: any[]) => {
           const batch = writeBatch(db);
           chunk.forEach(row => {
             const compactData: any = {};
-            rowKeys.forEach(k => { if (row[k] !== null) compactData[sanitizeKey(k)] = row[k]; });
+            rowKeys.forEach(k => { 
+              const val = row[k];
+              if (val !== null && val !== undefined && val !== "") {
+                compactData[sanitizeKey(k)] = val; 
+              }
+            });
             
             const docRef = doc(collection(db, 'snapshots'));
             batch.set(docRef, {
@@ -261,17 +271,22 @@ export default function App() {
             });
           });
           
-          let retries = 2;
-          while (retries >= 0) {
+          let retries = 3;
+          while (retries > 0) {
             try {
               await batch.commit();
               completed += chunk.length;
-              setImportProgress(prev => ({ ...prev, current: completed, status: `Sincronizando... ${Math.round((completed/totalRecords)*100)}%` }));
+              setImportProgress(prev => ({ 
+                ...prev, 
+                current: completed, 
+                status: `Sincronizando... ${completed} de ${totalRecords} (${Math.round((completed/totalRecords)*100)}%)` 
+              }));
               return;
             } catch (e) {
-              if (retries === 0) throw e;
               retries--;
-              await new Promise(r => setTimeout(r, 1000));
+              if (retries === 0) throw e;
+              console.warn("[Professional Import] Lote falhou, tentando novamente...", e);
+              await new Promise(r => setTimeout(r, 2000));
             }
           }
         };
@@ -289,21 +304,21 @@ export default function App() {
         });
 
         await Promise.all(workers);
-        setImportProgress(prev => ({ ...prev, status: 'Importação concluída!' }));
+        setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
         setTimeout(() => { 
           setIsImporting(false); 
           setImportProgress({ current: 0, total: 0, status: '', error: null }); 
-        }, 2000);
+        }, 3000);
 
       } catch (error: any) {
         console.error("Erro Profissional:", error);
-        setImportProgress(prev => ({ ...prev, status: 'Erro', error: error.message }));
+        setImportProgress(prev => ({ ...prev, status: 'Erro na importação', error: error.message }));
       }
     };
     reader.onerror = (err) => {
-      setImportProgress(prev => ({ ...prev, status: 'Erro de leitura', error: "Erro ao ler o arquivo físico do seu computador." }));
+      setImportProgress(prev => ({ ...prev, status: 'Erro de leitura', error: "Erro ao ler o arquivo do seu computador." }));
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   };
 
   const handleDeleteSnapshots = async (all = false) => {
