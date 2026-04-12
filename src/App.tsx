@@ -256,27 +256,30 @@ export default function App() {
         const statusKey = findKey(['STATUS', 'SITUAÇÃO', 'ESTADO', 'RESULTADO', 'SITUAÇÃO ATUAL', 'SITUAÇÃO DO COLABORADOR']);
         const worksiteKey = findKey(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'UNIDADE', 'CIDADE', 'FRENTE DE TRABALHO']);
 
-        const batchSize = 25; // Even smaller for maximum reliability
+        const batchSize = 100; // Efficient batch size
         const totalRecords = data.length;
+        const concurrencyLimit = 5; // Process 5 batches in parallel
         
-        console.log(`[Expert Import] Iniciando processamento de ${totalRecords} registros em lotes de ${batchSize}`);
-
+        console.log(`[Turbo Import] Iniciando motor de alta performance para ${totalRecords} registros.`);
+        
+        // Split data into batches
+        const batches: any[][] = [];
         for (let i = 0; i < totalRecords; i += batchSize) {
-          const chunk = data.slice(i, i + batchSize);
-          const currentBatchNum = Math.floor(i / batchSize) + 1;
-          const totalBatches = Math.ceil(totalRecords / batchSize);
-          
-          setImportProgress(prev => ({ 
-            ...prev, 
-            status: `Enviando lote ${currentBatchNum} de ${totalBatches}...` 
-          }));
-          
+          batches.push(data.slice(i, i + batchSize));
+        }
+
+        let completedRecords = 0;
+        
+        // Process batches with controlled concurrency
+        const processBatch = async (chunk: any[], batchIndex: number) => {
           const snapshotsToUpload = chunk.map((row: any) => {
-            const sanitizedRawData: any = {};
+            // Optimization: Only store columns that have actual data to keep it "light"
+            const compactRawData: any = {};
             rowKeys.forEach(key => {
               const val = row[key];
-              // Firestore does not support 'undefined'. Replace with null or empty string.
-              sanitizedRawData[sanitizeKey(key)] = val === undefined ? null : val;
+              if (val !== undefined && val !== null && val !== "") {
+                compactRawData[sanitizeKey(key)] = val;
+              }
             });
 
             const getSafeVal = (key: string | undefined) => {
@@ -295,7 +298,7 @@ export default function App() {
               type: type,
               referenceMonth: month,
               importDate: new Date().toISOString(),
-              rawData: sanitizedRawData,
+              rawData: compactRawData, // Light version
               columnOrder: sanitizedHeaders,
               importedBy: user?.uid || "anonymous",
               worksite: String(getSafeVal(worksiteKey) || "Geral"),
@@ -305,38 +308,35 @@ export default function App() {
             };
           });
 
-          // Expert Retry & Timeout Logic
           let retries = 3;
-          let success = false;
-          while (retries > 0 && !success) {
+          while (retries > 0) {
             try {
-              console.log(`[Expert Import] Enviando lote ${currentBatchNum}/${totalBatches}...`);
               const batch = writeBatch(db);
               snapshotsToUpload.forEach(snapshot => {
                 const docRef = doc(collection(db, 'snapshots'));
                 batch.set(docRef, snapshot);
               });
-
-              const commitPromise = batch.commit();
-              const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Timeout de rede")), 45000)
-              );
-              
-              await Promise.race([commitPromise, timeoutPromise]);
-              console.log(`[Expert Import] Lote ${currentBatchNum} concluído com sucesso.`);
-              success = true;
+              await batch.commit();
+              completedRecords += chunk.length;
+              setImportProgress(prev => ({ 
+                ...prev, 
+                current: completedRecords,
+                status: `Enviando dados... (${completedRecords} de ${totalRecords} concluídos)` 
+              }));
+              return;
             } catch (err: any) {
-              console.error(`[Expert Import] Erro no lote ${currentBatchNum}:`, err);
               retries--;
-              if (retries === 0) throw new Error(`Falha crítica no lote ${currentBatchNum}: ${err.message}`);
-              setImportProgress(prev => ({ ...prev, status: `Erro no lote ${currentBatchNum}. Tentando novamente (${retries} restantes)...` }));
-              await new Promise(resolve => setTimeout(resolve, 3000));
+              console.warn(`[Turbo Import] Falha no lote ${batchIndex + 1}, retentando...`, err);
+              if (retries === 0) throw err;
+              await new Promise(resolve => setTimeout(resolve, 2000));
             }
           }
+        };
 
-          setImportProgress(prev => ({ ...prev, current: Math.min(i + batchSize, totalRecords) }));
-          // UI Breathing room
-          await new Promise(resolve => setTimeout(resolve, 100));
+        // Execute batches in parallel with limit
+        for (let i = 0; i < batches.length; i += concurrencyLimit) {
+          const currentGroup = batches.slice(i, i + concurrencyLimit);
+          await Promise.all(currentGroup.map((chunk, idx) => processBatch(chunk, i + idx)));
         }
 
         setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
