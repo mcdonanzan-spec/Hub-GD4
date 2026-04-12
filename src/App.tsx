@@ -637,7 +637,7 @@ export default function App() {
       </motion.aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto custom-scrollbar bg-gray-50/50">
         <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 sticky top-0 z-20 px-8 py-4 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <h2 className="text-xl font-semibold text-gray-900 capitalize">{activeTab}</h2>
@@ -1289,15 +1289,16 @@ export default function App() {
                   </div>
                 ) : (
                   <Card className="overflow-hidden flex flex-col">
-                    {/* Top Scrollbar - Only visible if table is wider than container */}
+                    {/* Top Scrollbar - Visible if table overflows container */}
                     <div 
                       ref={topScrollRef}
-                      className={`overflow-x-auto overflow-y-hidden h-2.5 bg-gray-50 border-b border-gray-100 scrollbar-thin transition-opacity ${tableWidth > (tableContainerRef.current?.clientWidth || 0) ? 'opacity-100' : 'opacity-0 h-0'}`}
+                      className="overflow-x-auto overflow-y-hidden h-3 bg-gray-100/50 border-b border-gray-200 custom-scrollbar"
+                      style={{ display: tableWidth > (tableContainerRef.current?.clientWidth || 0) ? 'block' : 'none' }}
                     >
                       <div style={{ width: tableWidth || '100%', height: '1px' }} />
                     </div>
 
-                    <div ref={tableContainerRef} className="overflow-x-auto">
+                    <div ref={tableContainerRef} className="overflow-x-auto custom-scrollbar">
                       <table className="w-full text-left border-collapse min-w-max">
                         <thead>
                           <tr className="bg-gray-50 border-b border-gray-100">
