@@ -956,37 +956,14 @@ export default function App() {
               >
                 <div className="flex flex-col gap-6 mb-8">
                   <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                    <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide w-full md:w-auto">
-                      <button 
-                        onClick={() => setDashboardConfig(prev => ({ ...prev, showStats: !prev.showStats }))}
-                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showStats ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'}`}
-                      >
-                        Resumo Geral
-                      </button>
-                      <button 
-                        onClick={() => setDashboardConfig(prev => ({ ...prev, showPie: !prev.showPie }))}
-                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showPie ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'}`}
-                      >
-                        Gráfico de Status
-                      </button>
-                      <button 
-                        onClick={() => setDashboardConfig(prev => ({ ...prev, showBar: !prev.showBar }))}
-                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showBar ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'}`}
-                      >
-                        Problemas por Obra
-                      </button>
-                      <button 
-                        onClick={() => setDashboardConfig(prev => ({ ...prev, showCritical: !prev.showCritical }))}
-                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showCritical ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'}`}
-                      >
-                        Lista Crítica
-                      </button>
-                      <button 
-                        onClick={() => setDashboardConfig(prev => ({ ...prev, showDynamic: !prev.showDynamic }))}
-                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${dashboardConfig.showDynamic ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-blue-600 border-blue-200 hover:border-blue-300'}`}
-                      >
-                        Análise Dinâmica (Tabela/Gráfico)
-                      </button>
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-200">
+                        <LayoutDashboard size={20} />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-900">Análise Dinâmica de Dados</h3>
+                        <p className="text-xs text-gray-500 font-medium">Personalize seus indicadores e filtros em tempo real</p>
+                      </div>
                     </div>
                     <div className="flex gap-2 w-full md:w-auto justify-end items-center">
                       <div className={`hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold ${navigator.onLine ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
@@ -996,9 +973,6 @@ export default function App() {
                       <Button variant="secondary" onClick={() => window.location.reload()}>
                         <Clock size={16} className="mr-2" /> Sincronizar Agora
                       </Button>
-                      <Button variant="secondary" onClick={() => setDashboardConfig(prev => ({ ...prev, layout: prev.layout === 'grid' ? 'stack' : 'grid' }))}>
-                        {dashboardConfig.layout === 'grid' ? <><List size={16} className="mr-2" /> Lista</> : <><Grid size={16} className="mr-2" /> Grade</>}
-                      </Button>
                       {isAdmin && (
                         <Button 
                           variant="secondary" 
@@ -1006,145 +980,17 @@ export default function App() {
                           onClick={() => setDeleteModal({ show: true, type: 'ALL' })}
                           disabled={isDeleting || snapshots.length === 0}
                         >
-                          <X size={16} className="mr-2" /> Limpar Dados Importados
-                        </Button>
-                      )}
-                      {isAdmin && (
-                        <Button variant="ghost" className="text-[10px] opacity-20 hover:opacity-100" onClick={seedDatabase}>
-                          Seed Data
+                          <X size={16} className="mr-2" /> Limpar Dados
                         </Button>
                       )}
                     </div>
                   </div>
                 </div>
 
-                {/* Dynamic Analytics Section */}
-                {dashboardConfig.showDynamic && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="mb-12"
-                  >
-                    <DynamicAnalytics data={currentSnapshots} type={snapshotType} />
-                  </motion.div>
-                )}
-
-                {/* Stats Grid */}
-                {dashboardConfig.showStats && (
-                  <div className={`grid gap-6 ${dashboardConfig.layout === 'grid' ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4' : 'grid-cols-1'}`}>
-                    <StatCard 
-                      title="Total Registros" 
-                      value={totalEmpresas} 
-                      icon={<Users className="text-blue-600" />} 
-                      trend={`${selectedMonth}`}
-                    />
-                    <StatCard 
-                      title="Aptas" 
-                      value={aptas} 
-                      icon={<CheckCircle2 className="text-emerald-600" />} 
-                      color="emerald"
-                    />
-                    <StatCard 
-                      title="Bloqueadas" 
-                      value={bloqueadas} 
-                      icon={<AlertTriangle className="text-red-600" />} 
-                      color="red"
-                    />
-                    <StatCard 
-                      title="Pendentes" 
-                      value={pendentes} 
-                      icon={<Clock className="text-amber-600" />} 
-                      color="amber"
-                    />
-                  </div>
-                )}
-
-                {/* Charts Section */}
-                {(dashboardConfig.showPie || dashboardConfig.showBar) && (
-                  <div className={`grid gap-8 ${dashboardConfig.layout === 'grid' ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
-                    {dashboardConfig.showPie && (
-                      <Card className="p-6">
-                        <h3 className="text-lg font-semibold mb-6">Status Geral ({snapshotType === 'COMPANY_DOCS' ? 'Empresas' : 'Colaboradores'})</h3>
-                        <div className="h-64">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                              <Pie
-                                data={[
-                                  { name: 'Apto', value: aptas },
-                                  { name: 'Bloqueado', value: bloqueadas },
-                                  { name: 'Pendente', value: pendentes },
-                                ]}
-                                innerRadius={60}
-                                outerRadius={80}
-                                paddingAngle={5}
-                                dataKey="value"
-                              >
-                                <Cell fill="#10b981" />
-                                <Cell fill="#ef4444" />
-                                <Cell fill="#f59e0b" />
-                              </Pie>
-                              <Tooltip />
-                            </PieChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </Card>
-                    )}
-
-                    {dashboardConfig.showBar && (
-                      <Card className="p-6">
-                        <h3 className="text-lg font-semibold mb-6">Problemas por Obra</h3>
-                        <div className="h-64">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={getIssuesByWorksite(currentSnapshots)}>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
-                              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
-                              <Tooltip cursor={{ fill: '#f8fafc' }} />
-                              <Bar dataKey="issues" fill="#1e293b" radius={[4, 4, 0, 0]} />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </Card>
-                    )}
-                  </div>
-                )}
-
-                {/* Critical List */}
-                {dashboardConfig.showCritical && (
-                  <Card>
-                    <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-                      <h3 className="text-lg font-semibold">Registros Críticos</h3>
-                      <Button variant="secondary" className="text-sm">Ver Todos</Button>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left">
-                        <thead>
-                          <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
-                            <th className="px-6 py-4 font-medium">Entidade</th>
-                            <th className="px-6 py-4 font-medium">Obra</th>
-                            <th className="px-6 py-4 font-medium">Status</th>
-                            <th className="px-6 py-4 font-medium"></th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                          {currentSnapshots.filter(s => s.status !== 'APTO').slice(0, 5).map(s => (
-                            <tr key={s.id} className="hover:bg-gray-50 transition-colors">
-                              <td className="px-6 py-4 font-medium text-gray-900">{s.contractorName}</td>
-                              <td className="px-6 py-4 text-gray-500 text-sm">{s.worksite}</td>
-                              <td className="px-6 py-4"><Badge status={s.status as any} /></td>
-                              <td className="px-6 py-4 text-right">
-                                <button className="p-2 hover:bg-gray-200 rounded-lg text-gray-400">
-                                  <MoreVertical size={16} />
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </Card>
-                )}
+                {/* Dynamic Analytics is now the primary and only section */}
+                <div className="mb-12">
+                  <DynamicAnalytics data={currentSnapshots} type={snapshotType} />
+                </div>
               </motion.div>
             )}
 
