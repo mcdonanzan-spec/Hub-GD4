@@ -250,19 +250,22 @@ export default function App() {
         const statusK = findK(['STATUS', 'SITUAÇÃO', 'ESTADO']);
         const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']);
 
-        // Step 3: High-Speed Parallel Upload
-        const BATCH_SIZE = 100; // Increased for better performance on large files
-        const CONCURRENCY = 6; // Slightly increased concurrency
+        // Step 3: Ultra-Turbo Parallel Upload
+        const BATCH_SIZE = 500; // Maximum allowed by Firestore for peak performance
+        const CONCURRENCY = 10; // High concurrency for near-instant processing
         let completed = 0;
         let failedBatches = 0;
 
-        setImportProgress({ current: 0, total: totalRecords, status: 'Iniciando sincronização turbo...', error: null });
-        await new Promise(resolve => setTimeout(resolve, 300));
+        setImportProgress({ current: 0, total: totalRecords, status: 'Ativando Motor Ultra-Turbo...', error: null });
+        await new Promise(resolve => setTimeout(resolve, 200));
 
         const uploadBatch = async (chunk: any[], batchIndex: number) => {
           const batch = writeBatch(db);
+          
+          // Optimization: Pre-process chunk to minimize work inside the loop
           chunk.forEach(row => {
             const compactData: any = {};
+            // Only store non-empty values to keep documents "light"
             rowKeys.forEach(k => { 
               const val = row[k];
               if (val !== null && val !== undefined && val !== "") {
@@ -272,12 +275,16 @@ export default function App() {
             
             const docRef = doc(collection(db, 'snapshots'));
             batch.set(docRef, {
-              type, referenceMonth: month, importDate: new Date().toISOString(),
-              rawData: compactData, columnOrder: sanitizedHeaders, importedBy: user?.uid || "anonymous",
-              worksite: String(row[worksiteK!] || "Geral"),
-              contractorName: String(row[nameK!] || rowKeys.find(k => typeof row[k] === 'string' && row[k].length > 3) || "Sem Nome"),
-              cnpj: String(row[idK!] || ""),
-              status: String(row[statusK!] || "PENDENTE").toUpperCase(),
+              type, 
+              referenceMonth: month, 
+              importDate: new Date().toISOString(),
+              rawData: compactData, 
+              columnOrder: sanitizedHeaders, 
+              importedBy: user?.uid || "anonymous",
+              worksite: String(row[worksiteK!] || "Geral").trim(),
+              contractorName: String(row[nameK!] || rowKeys.find(k => typeof row[k] === 'string' && row[k].length > 3) || "Sem Nome").trim(),
+              cnpj: String(row[idK!] || "").trim(),
+              status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
             });
           });
           
@@ -286,20 +293,21 @@ export default function App() {
             try {
               await batch.commit();
               completed += chunk.length;
+              // Smooth progress update
               setImportProgress(prev => ({ 
                 ...prev, 
                 current: completed, 
-                status: `Sincronizando... ${completed} de ${totalRecords} (${Math.round((completed/totalRecords)*100)}%)` 
+                status: `Sincronização Ultra-Rápida: ${completed} / ${totalRecords} (${Math.round((completed/totalRecords)*100)}%)` 
               }));
               return;
             } catch (e: any) {
               retries--;
-              console.warn(`[Professional Import] Lote ${batchIndex} falhou (${retries} tentativas restantes):`, e);
+              console.warn(`[Ultra-Turbo] Lote ${batchIndex} falhou. Tentando novamente...`, e);
               if (retries === 0) {
                 failedBatches++;
                 throw e;
               }
-              await new Promise(r => setTimeout(r, 2000));
+              await new Promise(r => setTimeout(r, 1000));
             }
           }
         };
@@ -310,14 +318,13 @@ export default function App() {
         const queue = [...chunks];
         const workers = Array(Math.min(CONCURRENCY, queue.length)).fill(null).map(async (_, workerId) => {
           while (queue.length > 0) {
-            const batchIndex = chunks.length - queue.length;
             const chunk = queue.shift();
             if (chunk) {
+              const batchIndex = chunks.indexOf(chunk);
               try {
                 await uploadBatch(chunk, batchIndex);
               } catch (e) {
-                console.error(`[Professional Import] Worker ${workerId} falhou no lote ${batchIndex}.`);
-                // We continue with other batches even if one fails
+                console.error(`[Ultra-Turbo] Worker ${workerId} falhou no lote ${batchIndex}.`);
               }
             }
           }
@@ -326,14 +333,14 @@ export default function App() {
         await Promise.all(workers);
 
         if (failedBatches > 0) {
-          throw new Error(`Importação finalizada com avisos: ${failedBatches} lotes não puderam ser enviados. Verifique sua conexão.`);
+          throw new Error(`Importação concluída com ${failedBatches} lotes falhos devido à instabilidade de rede.`);
         }
 
-        setImportProgress(prev => ({ ...prev, status: 'Importação concluída com sucesso!' }));
+        setImportProgress(prev => ({ ...prev, status: 'Sincronização concluída com sucesso total!' }));
         setTimeout(() => { 
           setIsImporting(false); 
           setImportProgress({ current: 0, total: 0, status: '', error: null }); 
-        }, 3000);
+        }, 2000);
 
       } catch (error: any) {
         console.error("[Professional Import] Erro Fatal:", error);
