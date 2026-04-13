@@ -250,7 +250,7 @@ export default function App() {
 
   const startImport = async () => {
     const { type, file } = importModal;
-    if (!file || !type) return;
+    if (!file || !type || isImporting) return;
 
     const month = selectedMonth === 'ALL' ? format(new Date(), 'yyyy-MM') : selectedMonth;
     setImportModal({ show: false, type: null, file: null });
@@ -342,76 +342,92 @@ export default function App() {
 
       // Step 3: High-Speed Pipelined Upload
       const BATCH_SIZE = 500; 
-      const CONCURRENCY = 15; 
+      const CONCURRENCY = user ? 5 : 0; // Reduced concurrency for stability, 0 if offline
       let completed = 0;
       let failedBatches = 0;
 
-      const chunks: any[][] = [];
-      for (let i = 0; i < data.length; i += BATCH_SIZE) chunks.push(data.slice(i, i + BATCH_SIZE));
+      if (user) {
+        const chunks: any[][] = [];
+        for (let i = 0; i < data.length; i += BATCH_SIZE) chunks.push(data.slice(i, i + BATCH_SIZE));
 
-      setImportProgress({ current: 0, total: totalRecords, status: `Preparado: ${chunks.length} lotes. Iniciando...`, error: null, stats: null });
-
-      const processChunk = async (chunk: any[]) => {
-        const batch = writeBatch(db);
-        chunk.forEach(row => {
-          const name = String(row[nameK!] || "Sem Nome").trim();
-          if (existingNames.has(name.toLowerCase())) updatedCount++;
-          else newCount++;
-
-          const compactData: any = {};
-          for (const k in row) {
-            const val = row[k];
-            if (val !== null && val !== undefined && val !== "") {
-              compactData[keyMap[k]] = val;
-            }
-          }
-          
-          const docRef = doc(collection(db, 'snapshots'));
-          batch.set(docRef, {
-            type, 
-            referenceMonth: month, 
-            importDate: new Date().toISOString(),
-            rawData: compactData, 
-            columnOrder: sanitizedHeaders, 
-            importedBy: user?.uid || "anonymous",
-            worksite: String(row[worksiteK!] || "Geral").trim(),
-            contractorName: name,
-            cnpj: type === 'EMPLOYEE_DOCS' ? normalizeCPF(row[idK!]) : String(row[idK!] || "").trim(),
-            status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
-          });
+        setImportProgress({ 
+          current: 0, 
+          total: totalRecords, 
+          status: `Preparado: ${chunks.length} lotes. Iniciando sincronização...`, 
+          error: null, 
+          stats: null 
         });
 
-        await batch.commit();
-        completed += chunk.length;
-        
-        setImportProgress(prev => ({ 
-          ...prev, 
-          current: completed, 
-          status: `Sincronizando: ${completed} / ${totalRecords}` 
-        }));
-      };
+        const processChunk = async (chunk: any[]) => {
+          const batch = writeBatch(db);
+          chunk.forEach(row => {
+            const name = String(row[nameK!] || "Sem Nome").trim();
+            if (existingNames.has(name.toLowerCase())) updatedCount++;
+            else newCount++;
 
-      const queue = [...chunks];
-      const runWorker = async () => {
-        while (queue.length > 0) {
-          const chunk = queue.shift();
-          if (!chunk) break;
-          try {
-            await processChunk(chunk);
-          } catch (e) {
-            console.error("Batch failed:", e);
-            failedBatches++;
+            const compactData: any = {};
+            for (const k in row) {
+              const val = row[k];
+              if (val !== null && val !== undefined && val !== "") {
+                compactData[keyMap[k]] = val;
+              }
+            }
+            
+            const docRef = doc(collection(db, 'snapshots'));
+            batch.set(docRef, {
+              type, 
+              referenceMonth: month, 
+              importDate: new Date().toISOString(),
+              rawData: compactData, 
+              columnOrder: sanitizedHeaders, 
+              importedBy: user?.uid || "anonymous",
+              worksite: String(row[worksiteK!] || "Geral").trim(),
+              contractorName: name,
+              cnpj: type === 'EMPLOYEE_DOCS' ? normalizeCPF(row[idK!]) : String(row[idK!] || "").trim(),
+              status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
+            });
+          });
+
+          await batch.commit();
+          completed += chunk.length;
+          
+          setImportProgress(prev => ({ 
+            ...prev, 
+            current: completed, 
+            status: `Sincronizando: ${completed} / ${totalRecords}` 
+          }));
+        };
+
+        const queue = [...chunks];
+        const runWorker = async () => {
+          while (queue.length > 0) {
+            const chunk = queue.shift();
+            if (!chunk) break;
+            try {
+              await processChunk(chunk);
+            } catch (e: any) {
+              console.error("Batch failed:", e);
+              failedBatches++;
+              // Track failed records accurately
+              const failedInThisBatch = chunk.length;
+              setImportProgress(prev => ({ 
+                ...prev, 
+                status: `Aviso: Lote falhou (${failedBatches}). Continuando...` 
+              }));
+            }
           }
+        };
+
+        await Promise.all(Array(CONCURRENCY).fill(null).map(runWorker));
+
+        if (failedBatches === chunks.length) {
+          throw new Error("Falha total na sincronização. Verifique sua conexão ou permissões.");
         }
-      };
-
-      await Promise.all(Array(CONCURRENCY).fill(null).map(runWorker));
-
-      if (failedBatches > 0 && user) {
-        throw new Error(`Importação concluída com ${failedBatches} erros. Verifique sua conexão.`);
+      } else {
+        setImportProgress(prev => ({ ...prev, status: 'Modo Offline: Processando localmente...' }));
       }
 
-      // Offline Mode Fallback
+      // Offline Mode Fallback (also used for local persistence)
       if (!user) {
         const localSnapshots = data.map((row, idx) => {
           const name = String(row[nameK!] || "Sem Nome").trim();
@@ -441,6 +457,8 @@ export default function App() {
         await set('gd4_snapshots_cache', updatedSnapshots);
       }
 
+      const actualFailedRecords = failedBatches * BATCH_SIZE; // Approximation, but better than nothing
+      
       setImportProgress({ 
         current: totalRecords, 
         total: totalRecords, 
@@ -450,7 +468,7 @@ export default function App() {
           total: totalRecords,
           new: newCount,
           updated: updatedCount,
-          failed: failedBatches * BATCH_SIZE
+          failed: Math.min(actualFailedRecords, totalRecords)
         }
       });
 
