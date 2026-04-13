@@ -22,7 +22,8 @@ import {
   ChevronLeft,
   Filter,
   MoreVertical,
-  Download
+  Download,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -147,11 +148,13 @@ export default function App() {
   const [isImporting, setIsImporting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteModal, setDeleteModal] = useState({ show: false, type: '' });
-  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '', error: null as string | null });
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, status: '', error: null as string | null, stats: null as any });
   const [importModal, setImportModal] = useState<{ show: boolean, type: 'COMPANY_DOCS' | 'EMPLOYEE_DOCS' | null, file: File | null }>({ show: false, type: null, file: null });
   const [selectedSnapshot, setSelectedSnapshot] = useState<Snapshot | null>(null);
   
-  // Local Persistence Logic
+  const normalizeCPF = (val: string) => {
+    return String(val || "").replace(/\D/g, '').padStart(11, '0').substring(0, 11);
+  };
   useEffect(() => {
     const loadCache = async () => {
       try {
@@ -252,39 +255,64 @@ export default function App() {
     const month = selectedMonth === 'ALL' ? format(new Date(), 'yyyy-MM') : selectedMonth;
     setImportModal({ show: false, type: null, file: null });
     setIsImporting(true);
-    setImportProgress({ current: 0, total: 0, status: 'Iniciando motor de alta performance...', error: null });
+    setImportProgress({ current: 0, total: 0, status: 'Iniciando motor de alta performance...', error: null, stats: null });
     
     try {
-      // Step 1: Offload Parsing to a Web Worker (Inline Blob for zero-config)
-      const workerCode = `
-        importScripts('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
-        self.onmessage = function(e) {
-          try {
-            const wb = XLSX.read(e.data, { type: 'array', cellDates: true });
-            const ws = wb.Sheets[wb.SheetNames[0]];
-            const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
-            self.postMessage({ success: true, data: data });
-          } catch (err) {
-            self.postMessage({ success: false, error: err.message });
-          }
-        };
-      `;
-      
-      const blob = new Blob([workerCode], { type: 'application/javascript' });
-      const worker = new Worker(URL.createObjectURL(blob));
-      
-      const arrayBuffer = await file.arrayBuffer();
-      
-      setImportProgress(prev => ({ ...prev, status: 'Analisando planilha em segundo plano...' }));
-      
-      const data = await new Promise<any[]>((resolve, reject) => {
-        worker.onmessage = (e) => {
-          if (e.data.success) resolve(e.data.data);
-          else reject(new Error(e.data.error));
-          worker.terminate();
-        };
-        worker.postMessage(arrayBuffer, [arrayBuffer]);
-      });
+      let data: any[] = [];
+      const isCSV = file.name.toLowerCase().endsWith('.csv');
+
+      if (isCSV) {
+        setImportProgress(prev => ({ ...prev, status: 'Lendo CSV (ISO-8859-1)...' }));
+        const text = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.readAsText(file, 'ISO-8859-1');
+        });
+        
+        const cleanText = text.replace(/^\uFEFF/, '');
+        const lines = cleanText.split(/\r?\n/).filter(line => line.trim());
+        if (lines.length < 2) throw new Error("Arquivo CSV vazio ou sem dados.");
+
+        const headers = lines[0].split(';').map(h => h.replace(/"/g, '').trim());
+        data = lines.slice(1).map(line => {
+          const cells = line.split(';').map(c => c.replace(/"/g, '').trim());
+          const row: any = {};
+          headers.forEach((h, i) => {
+            row[h] = cells[i] || "";
+          });
+          return row;
+        });
+      } else {
+        // Step 1: Offload Parsing to a Web Worker (Inline Blob for zero-config)
+        const workerCode = `
+          importScripts('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
+          self.onmessage = function(e) {
+            try {
+              const wb = XLSX.read(e.data, { type: 'array', cellDates: true });
+              const ws = wb.Sheets[wb.SheetNames[0]];
+              const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
+              self.postMessage({ success: true, data: data });
+            } catch (err) {
+              self.postMessage({ success: false, error: err.message });
+            }
+          };
+        `;
+        
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        const worker = new Worker(URL.createObjectURL(blob));
+        const arrayBuffer = await file.arrayBuffer();
+        
+        setImportProgress(prev => ({ ...prev, status: 'Analisando planilha em segundo plano...' }));
+        
+        data = await new Promise<any[]>((resolve, reject) => {
+          worker.onmessage = (e) => {
+            if (e.data.success) resolve(e.data.data);
+            else reject(new Error(e.data.error));
+            worker.terminate();
+          };
+          worker.postMessage(arrayBuffer, [arrayBuffer]);
+        });
+      }
 
       if (!data || data.length === 0) throw new Error("A planilha selecionada está vazia.");
 
@@ -300,25 +328,36 @@ export default function App() {
       
       const sanitizedHeaders = rowKeys.map(h => keyMap[h]);
       const findK = (keys: string[]) => rowKeys.find(k => keys.includes(k.toUpperCase().trim()));
-      const nameK = findK(type === 'COMPANY_DOCS' ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'FORNECEDOR'] : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO']);
-      const idK = findK(type === 'COMPANY_DOCS' ? ['CNPJ', 'IDENTIFICADOR'] : ['CPF', 'MATRÍCULA']);
+      
+      // Smart Mapping from User Snippet + Existing Logic
+      const nameK = findK(type === 'COMPANY_DOCS' ? ['EMPRESA', 'CONTRACTOR', 'NOME', 'RAZÃO SOCIAL', 'FORNECEDOR'] : ['COLABORADOR', 'NOME', 'FUNCIONÁRIO', 'NOME DO COLABORADOR']);
+      const idK = findK(type === 'COMPANY_DOCS' ? ['CNPJ', 'IDENTIFICADOR'] : ['CPF', 'MATRÍCULA', 'IDENTIFICADOR']);
       const statusK = findK(['STATUS', 'SITUAÇÃO', 'ESTADO']);
-      const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO']);
+      const worksiteK = findK(['OBRA', 'WORKSITE', 'LOCAL', 'PROJETO', 'RESPONSÁVEL']);
+
+      // Calculate Stats
+      const existingNames = new Set(snapshots.filter(s => s.type === type && s.referenceMonth === month).map(s => s.contractorName?.toLowerCase().trim()));
+      let newCount = 0;
+      let updatedCount = 0;
 
       // Step 3: High-Speed Pipelined Upload
       const BATCH_SIZE = 500; 
-      const CONCURRENCY = 15; // Balanced for Firestore ramp-up
+      const CONCURRENCY = 15; 
       let completed = 0;
       let failedBatches = 0;
 
       const chunks: any[][] = [];
       for (let i = 0; i < data.length; i += BATCH_SIZE) chunks.push(data.slice(i, i + BATCH_SIZE));
 
-      setImportProgress({ current: 0, total: totalRecords, status: `Preparado: ${chunks.length} lotes. Iniciando...`, error: null });
+      setImportProgress({ current: 0, total: totalRecords, status: `Preparado: ${chunks.length} lotes. Iniciando...`, error: null, stats: null });
 
       const processChunk = async (chunk: any[]) => {
         const batch = writeBatch(db);
         chunk.forEach(row => {
+          const name = String(row[nameK!] || "Sem Nome").trim();
+          if (existingNames.has(name.toLowerCase())) updatedCount++;
+          else newCount++;
+
           const compactData: any = {};
           for (const k in row) {
             const val = row[k];
@@ -336,8 +375,8 @@ export default function App() {
             columnOrder: sanitizedHeaders, 
             importedBy: user?.uid || "anonymous",
             worksite: String(row[worksiteK!] || "Geral").trim(),
-            contractorName: String(row[nameK!] || "Sem Nome").trim(),
-            cnpj: String(row[idK!] || "").trim(),
+            contractorName: name,
+            cnpj: type === 'EMPLOYEE_DOCS' ? normalizeCPF(row[idK!]) : String(row[idK!] || "").trim(),
             status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
           });
         });
@@ -345,7 +384,6 @@ export default function App() {
         await batch.commit();
         completed += chunk.length;
         
-        // Throttle UI updates to 100ms to avoid React rendering bottleneck
         setImportProgress(prev => ({ 
           ...prev, 
           current: completed, 
@@ -353,7 +391,6 @@ export default function App() {
         }));
       };
 
-      // Worker Pool Pattern
       const queue = [...chunks];
       const runWorker = async () => {
         while (queue.length > 0) {
@@ -376,29 +413,46 @@ export default function App() {
 
       // Offline Mode Fallback
       if (!user) {
-        const localSnapshots = data.map((row, idx) => ({
-          id: `local_${Date.now()}_${idx}`,
-          type,
-          referenceMonth: month,
-          importDate: new Date().toISOString(),
-          rawData: row,
-          columnOrder: sanitizedHeaders,
-          importedBy: "local",
-          worksite: String(row[worksiteK!] || "Geral").trim(),
-          contractorName: String(row[nameK!] || "Sem Nome").trim(),
-          cnpj: String(row[idK!] || "").trim(),
-          status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
-        })) as Snapshot[];
+        const localSnapshots = data.map((row, idx) => {
+          const name = String(row[nameK!] || "Sem Nome").trim();
+          const compactData: any = {};
+          for (const k in row) {
+            const val = row[k];
+            if (val !== null && val !== undefined && val !== "") {
+              compactData[keyMap[k]] = val;
+            }
+          }
+          return {
+            id: `local_${Date.now()}_${idx}`,
+            type,
+            referenceMonth: month,
+            importDate: new Date().toISOString(),
+            rawData: compactData,
+            columnOrder: sanitizedHeaders,
+            importedBy: "local",
+            worksite: String(row[worksiteK!] || "Geral").trim(),
+            contractorName: name,
+            cnpj: type === 'EMPLOYEE_DOCS' ? normalizeCPF(row[idK!]) : String(row[idK!] || "").trim(),
+            status: String(row[statusK!] || "PENDENTE").toUpperCase().trim(),
+          };
+        }) as Snapshot[];
         const updatedSnapshots = [...localSnapshots, ...snapshots];
         setSnapshots(updatedSnapshots);
         await set('gd4_snapshots_cache', updatedSnapshots);
       }
 
-      setImportProgress({ current: totalRecords, total: totalRecords, status: 'Finalizado com sucesso!', error: null });
-      setTimeout(() => {
-        setIsImporting(false);
-        window.location.reload(); // Force reload to re-enable listeners and refresh view
-      }, 1500);
+      setImportProgress({ 
+        current: totalRecords, 
+        total: totalRecords, 
+        status: 'Sincronização Concluída!', 
+        error: null,
+        stats: {
+          total: totalRecords,
+          new: newCount,
+          updated: updatedCount,
+          failed: failedBatches * BATCH_SIZE
+        }
+      });
 
     } catch (error: any) {
       console.error("Expert Import Error:", error);
@@ -421,7 +475,8 @@ export default function App() {
       current: 0, 
       total: 100, // Placeholder until we count
       status: 'Iniciando limpeza profunda...', 
-      error: null 
+      error: null,
+      stats: null
     });
 
     try {
@@ -436,7 +491,7 @@ export default function App() {
       const total = targetIds.length;
 
       if (total === 0) {
-        setImportProgress({ current: 0, total: 0, status: 'Nenhum registro encontrado para excluir.', error: null });
+        setImportProgress({ current: 0, total: 0, status: 'Nenhum registro encontrado para excluir.', error: null, stats: null });
         setTimeout(() => setIsDeleting(false), 2000);
         return;
       }
@@ -445,7 +500,8 @@ export default function App() {
         current: 0, 
         total: total, 
         status: `Localizados ${total} registros. Iniciando remoção...`, 
-        error: null 
+        error: null,
+        stats: null
       });
 
       const chunkSize = 15; // Smaller chunks for high reliability
@@ -469,17 +525,18 @@ export default function App() {
         
         processed += chunk.length;
         
-        setImportProgress(prev => ({ 
-          ...prev, 
-          current: processed,
-          status: `Limpando base de dados... (${processed} de ${total})`
-        }));
+      setImportProgress(prev => ({ 
+        ...prev, 
+        current: processed,
+        status: `Limpando base de dados... (${processed} de ${total})`,
+        stats: null
+      }));
         
         // Small delay to keep UI responsive
         await new Promise(resolve => setTimeout(resolve, 20));
       }
 
-      setImportProgress(prev => ({ ...prev, status: 'Limpeza concluída com sucesso! Sincronizando...' }));
+      setImportProgress(prev => ({ ...prev, status: 'Limpeza concluída com sucesso! Sincronizando...', stats: null }));
       
       // Wait for Firestore to propagate changes
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -492,7 +549,8 @@ export default function App() {
       setImportProgress(prev => ({ 
         ...prev, 
         status: 'Falha na Limpeza',
-        error: "Erro: " + (error.message || "Não foi possível completar a limpeza. Tente recarregar a página.")
+        error: "Erro: " + (error.message || "Não foi possível completar a limpeza. Tente recarregar a página."),
+        stats: null
       }));
       setIsDeleting(false);
     }
@@ -658,16 +716,23 @@ export default function App() {
       <motion.aside 
         initial={false}
         animate={{ width: isSidebarOpen ? 280 : 80 }}
-        className="bg-white border-r border-gray-200 flex flex-col sticky top-0 h-screen z-30"
+        className="bg-white border-r border-slate-100 flex flex-col sticky top-0 h-screen z-30"
       >
         <div className="p-6 flex items-center justify-between">
-          {isSidebarOpen && <span className="font-bold text-xl tracking-tight">HUB GD4</span>}
-          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-gray-100 rounded-lg">
+          {isSidebarOpen && (
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-brand-600 rounded-xl flex items-center justify-center shadow-lg shadow-brand-100">
+                <LayoutDashboard className="text-white" size={16} />
+              </div>
+              <span className="font-black text-xl tracking-tighter text-slate-900">HUB GD4</span>
+            </div>
+          )}
+          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-slate-50 rounded-xl text-slate-400 transition-colors">
             {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
 
-        <nav className="flex-1 px-4 space-y-2 mt-4">
+        <nav className="flex-1 px-4 space-y-1.5 mt-6">
           <NavItem 
             icon={<LayoutDashboard size={20} />} 
             label="Dashboard" 
@@ -736,48 +801,58 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto custom-scrollbar bg-gray-50/50">
-        <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 sticky top-0 z-20 px-8 py-4 flex items-center justify-between">
+        <header className="bg-white/80 backdrop-blur-md border-b border-slate-100 sticky top-0 z-20 px-8 py-4 flex items-center justify-between">
           <div className="flex items-center gap-6">
-            <h2 className="text-xl font-semibold text-gray-900 capitalize">{activeTab}</h2>
+            <div className="flex flex-col">
+              <h2 className="text-xl font-black text-slate-900 tracking-tight capitalize">
+                {activeTab === 'dashboard' ? 'Dashboard Analítico' : 
+                 activeTab === 'contractors' ? 'Gestão de Empreiteiras' : 
+                 activeTab === 'agenda' ? 'Agenda de Campo' : 'Assistente Inteligente'}
+              </h2>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Hub Central GD4</p>
+            </div>
+            
+            <div className="h-8 w-px bg-slate-100 hidden md:block" />
+            
             {!user && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-100 rounded-full">
+              <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 border border-amber-100 rounded-full">
                 <div className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />
-                <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">Modo Offline (Dev)</span>
+                <span className="text-[10px] font-black text-amber-700 uppercase tracking-widest">Modo Offline</span>
               </div>
             )}
             {(activeTab === 'dashboard' || activeTab === 'contractors') && (
               <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-xl border border-gray-200">
+                <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-2xl border border-slate-200">
                   <div className="relative flex items-center">
-                    <CalendarIcon size={14} className="absolute left-2 text-gray-400 pointer-events-none" />
+                    <CalendarIcon size={14} className="absolute left-3 text-slate-400 pointer-events-none" />
                     <select 
                       value={selectedMonth}
                       onChange={(e) => {
                         setSelectedMonth(e.target.value);
                         if (e.target.value !== 'ALL') setSelectedMonths([]);
                       }}
-                      className="bg-transparent border-none text-[11px] font-bold focus:ring-0 cursor-pointer pl-7 pr-4 py-1 appearance-none"
+                      className="bg-transparent border-none text-[11px] font-black focus:ring-0 cursor-pointer pl-9 pr-4 py-1 appearance-none uppercase tracking-tighter"
                     >
-                      <option value="ALL">Todos os Períodos</option>
+                      <option value="ALL">TODOS OS PERÍODOS</option>
                       {Array.from(new Set(snapshots.map(s => s.referenceMonth).filter(Boolean))).sort().reverse().map(m => (
                         <option key={m as string} value={m as string}>{m as string}</option>
                       ))}
                     </select>
                   </div>
-                  <div className="h-4 w-px bg-gray-300 mx-1" />
+                  <div className="h-4 w-px bg-slate-200 mx-1" />
                   <select 
                     value={snapshotType}
                     onChange={(e) => setSnapshotType(e.target.value as any)}
-                    className="bg-transparent border-none text-[11px] font-bold focus:ring-0 cursor-pointer"
+                    className="bg-transparent border-none text-[11px] font-black focus:ring-0 cursor-pointer uppercase tracking-tighter"
                   >
-                    <option value="COMPANY_DOCS">Empresas</option>
-                    <option value="EMPLOYEE_DOCS">Colaboradores</option>
+                    <option value="COMPANY_DOCS">EMPRESAS</option>
+                    <option value="EMPLOYEE_DOCS">COLABORADORES</option>
                   </select>
                 </div>
                 
                 {selectedMonth === 'ALL' && snapshots.length > 0 && (
                   <div className="flex flex-wrap gap-1 items-center justify-end">
-                    <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest mr-1">Filtrar Meses:</span>
+                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mr-1">Filtrar Meses:</span>
                     {Array.from(new Set(snapshots.map(s => s.referenceMonth).filter(Boolean))).sort().reverse().map(m => (
                       <button
                         key={m as string}
@@ -788,10 +863,10 @@ export default function App() {
                               : [...prev, m as string]
                           );
                         }}
-                        className={`px-2 py-0.5 rounded-full text-[9px] font-bold transition-all border ${
+                        className={`px-2 py-0.5 rounded-full text-[9px] font-black transition-all border uppercase tracking-tighter ${
                           selectedMonths.includes(m as string)
-                            ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
-                            : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                            ? 'bg-brand-600 border-brand-600 text-white shadow-sm'
+                            : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
                         }`}
                       >
                         {m as string}
@@ -800,31 +875,28 @@ export default function App() {
                     {selectedMonths.length > 0 && (
                       <button 
                         onClick={() => setSelectedMonths([])}
-                        className="text-[9px] font-bold text-red-500 hover:underline ml-1"
+                        className="text-[9px] font-black text-red-500 hover:underline ml-1 uppercase tracking-widest"
                       >
                         Limpar
                       </button>
                     )}
                   </div>
                 )}
-                {selectedMonth === 'ALL' && snapshots.length === 0 && (
-                  <div className="text-right">
-                    <span className="text-[9px] font-bold text-amber-500 uppercase tracking-widest">Base de dados vazia. Faça um upload para ver os períodos.</span>
-                  </div>
-                )}
               </div>
             )}
           </div>
-          <div className="flex items-center gap-4">
-            <button className="p-2 text-gray-500 hover:bg-gray-100 rounded-full relative">
-              <Bell size={20} />
-              <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-            </button>
-            <div className="h-8 w-px bg-gray-200"></div>
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <Clock size={16} />
-              {format(new Date(), "dd 'de' MMMM", { locale: ptBR })}
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-3 text-sm text-slate-500 bg-slate-50 px-4 py-2 rounded-2xl border border-slate-100">
+              <Clock size={16} className="text-brand-600" />
+              <span className="font-bold">{format(new Date(), "dd 'de' MMMM", { locale: ptBR })}</span>
             </div>
+            
+            <div className="h-8 w-px bg-slate-100"></div>
+            
+            <button className="p-2.5 text-slate-500 hover:bg-slate-100 rounded-2xl relative transition-colors">
+              <Bell size={20} />
+              <span className="absolute top-2.5 right-2.5 w-2 h-2 bg-brand-600 rounded-full border-2 border-white"></span>
+            </button>
           </div>
         </header>
 
@@ -984,98 +1056,122 @@ export default function App() {
 
           {(isImporting || isDeleting) && (
             <motion.div 
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mb-8"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
             >
-              <Card className={`p-6 border-2 ${importProgress.error ? 'border-red-200 bg-red-50' : isDeleting ? 'border-orange-100 bg-orange-50/30' : 'border-blue-100 bg-blue-50/30'}`}>
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white ${importProgress.error ? 'bg-red-600' : isDeleting ? 'bg-orange-600 animate-pulse' : 'bg-blue-600 animate-pulse'}`}>
-                      {importProgress.error ? <AlertTriangle size={20} /> : isDeleting ? <X size={20} /> : <Plus size={20} />}
+              <Card className="max-w-xl w-full p-8 shadow-2xl border-none">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-4">
+                    <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg ${isDeleting ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}`}>
+                      {importProgress.stats ? <CheckCircle2 size={28} /> : (isDeleting ? <AlertTriangle size={28} /> : <Loader2 size={28} className="animate-spin" />)}
                     </div>
                     <div>
-                      <h3 className={`font-bold ${importProgress.error ? 'text-red-900' : isDeleting ? 'text-orange-900' : 'text-blue-900'}`}>
-                        {importProgress.error ? 'Falha na Operação' : (importProgress.status || (isDeleting ? "Excluindo Dados..." : "Processando Planilha..."))}
+                      <h3 className="text-2xl font-bold text-gray-900">
+                        {importProgress.stats ? 'Sincronização Concluída!' : (isDeleting ? 'Limpando Base...' : 'Importação Inteligente')}
                       </h3>
-                      <p className={`text-sm ${importProgress.error ? 'text-red-600' : isDeleting ? 'text-orange-600' : 'text-blue-600'}`}>
-                        {importProgress.error ? importProgress.error : isDeleting ? 'Removendo registros selecionados do banco de dados.' : 'Enviando dados para o sistema de forma segura.'}
-                      </p>
+                      <p className="text-sm text-gray-500 font-medium">{importProgress.status}</p>
                     </div>
                   </div>
-                  {!importProgress.error && (
-                    <div className="text-right">
-                      <span className={`text-2xl font-black ${isDeleting ? 'text-orange-900' : 'text-blue-900'}`}>
-                        {importProgress.total > 0 ? Math.round((importProgress.current / importProgress.total) * 100) : 0}%
-                      </span>
-                      <p className={`text-xs font-medium uppercase tracking-wider ${isDeleting ? 'text-orange-500' : 'text-blue-500'}`}>
-                        {importProgress.current} de {importProgress.total} registros
-                      </p>
-                    </div>
-                  )}
-                  {importProgress.error ? (
-                    <div className="flex flex-col gap-2">
-                      <Button 
-                        variant="secondary" 
-                        className="bg-white border-red-200 text-red-600 hover:bg-red-50"
-                        onClick={() => {
-                          setIsImporting(false);
-                          setIsDeleting(false);
-                          setImportProgress({ current: 0, total: 0, status: '', error: null });
-                        }}
-                      >
-                        Fechar e Tentar Novamente
-                      </Button>
-                      <button 
-                        onClick={() => {
-                          localStorage.clear();
-                          window.location.reload();
-                        }}
-                        className="text-[10px] text-gray-400 hover:text-gray-600 underline"
-                      >
-                        Limpar Cache e Recarregar Sistema
-                      </button>
-                      <button 
-                        onClick={() => {
-                          setIsImporting(false);
-                          setImportProgress({ current: 0, total: 0, status: '', error: null });
-                          window.location.reload();
-                        }}
-                        className="text-[10px] text-red-400 hover:text-red-600 font-bold uppercase tracking-tighter"
-                      >
-                        Forçar Reinício (Se estiver travado)
-                      </button>
-                      {!navigator.onLine && (
-                        <p className="text-[10px] text-red-500 text-center font-bold animate-pulse">
-                          ⚠️ VOCÊ ESTÁ OFFLINE
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    <Button 
-                      variant="ghost" 
-                      className="text-xs text-gray-400 hover:text-gray-600"
-                      onClick={() => {
-                        if (window.confirm("Deseja realmente cancelar a operação atual? Isso pode deixar os dados incompletos.")) {
-                          setIsImporting(false);
-                          setIsDeleting(false);
-                          setImportProgress({ current: 0, total: 0, status: '', error: null });
-                          window.location.reload();
-                        }
-                      }}
+                  {importProgress.stats && (
+                    <button 
+                      onClick={() => window.location.reload()}
+                      className="p-2 hover:bg-gray-100 rounded-full text-gray-400"
                     >
-                      Cancelar
-                    </Button>
+                      <X size={24} />
+                    </button>
                   )}
                 </div>
-                {!importProgress.error && (
-                  <div className={`h-3 rounded-full overflow-hidden ${isDeleting ? 'bg-orange-100' : 'bg-blue-100'}`}>
-                    <motion.div 
-                      className={`h-full ${isDeleting ? 'bg-orange-600' : 'bg-blue-600'}`}
-                      initial={{ width: 0 }}
-                      animate={{ width: `${importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}%` }}
-                      transition={{ type: "spring", bounce: 0, duration: 0.5 }}
-                    />
+
+                {importProgress.error ? (
+                  <div className="bg-red-50 border border-red-100 p-6 rounded-2xl mb-6">
+                    <div className="flex items-center gap-3 text-red-600 mb-2">
+                      <AlertTriangle size={20} />
+                      <span className="font-bold">Erro na Operação</span>
+                    </div>
+                    <p className="text-sm text-red-500 leading-relaxed">{importProgress.error}</p>
+                    <div className="mt-6 flex flex-col gap-2">
+                      <button 
+                        onClick={() => {
+                          del('gd4_snapshots_cache');
+                          window.location.reload();
+                        }}
+                        className="w-full py-3 bg-red-600 text-white rounded-xl font-bold text-sm hover:bg-red-700 transition-all"
+                      >
+                        Limpar Cache e Recarregar
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setIsImporting(false);
+                          setIsDeleting(false);
+                          setImportProgress({ current: 0, total: 0, status: '', error: null, stats: null });
+                        }}
+                        className="text-xs text-gray-400 hover:text-gray-600 underline"
+                      >
+                        Fechar e Tentar Novamente
+                      </button>
+                    </div>
+                  </div>
+                ) : importProgress.stats ? (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
+                        <p className="text-3xl font-black text-gray-900">{importProgress.stats.total}</p>
+                        <p className="text-[10px] uppercase font-black text-gray-400 tracking-widest mt-1">Total Processado</p>
+                      </div>
+                      <div className="bg-blue-50 p-5 rounded-2xl border border-blue-100">
+                        <p className="text-3xl font-black text-blue-600">+{importProgress.stats.new}</p>
+                        <p className="text-[10px] uppercase font-black text-blue-400 tracking-widest mt-1">Novos Registros</p>
+                      </div>
+                      <div className="bg-green-50 p-5 rounded-2xl border border-green-100">
+                        <p className="text-3xl font-black text-green-600">{importProgress.stats.updated}</p>
+                        <p className="text-[10px] uppercase font-black text-green-400 tracking-widest mt-1">Atualizados</p>
+                      </div>
+                      <div className="bg-red-50 p-5 rounded-2xl border border-red-100">
+                        <p className="text-3xl font-black text-red-600">{importProgress.stats.failed}</p>
+                        <p className="text-[10px] uppercase font-black text-red-400 tracking-widest mt-1">Falhas</p>
+                      </div>
+                    </div>
+                    <Button 
+                      onClick={() => window.location.reload()}
+                      className="w-full py-4 text-lg shadow-xl shadow-blue-100"
+                    >
+                      Concluir e Ver Dashboard
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    <div className={`h-4 rounded-full overflow-hidden ${isDeleting ? 'bg-red-100' : 'bg-blue-100'}`}>
+                      <motion.div 
+                        className={`h-full ${isDeleting ? 'bg-red-600' : 'bg-blue-600'}`}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}%` }}
+                        transition={{ type: "spring", bounce: 0, duration: 0.5 }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                      <span>{importProgress.current} de {importProgress.total} registros</span>
+                      <span>{importProgress.total > 0 ? Math.round((importProgress.current / importProgress.total) * 100) : 0}%</span>
+                    </div>
+                    <p className="text-xs text-center text-gray-400 italic">
+                      {isDeleting ? 'Isso pode levar alguns segundos dependendo do tamanho da base...' : 'Cruzando dados com a base existente e identificando alterações...'}
+                    </p>
+                    <div className="flex justify-center">
+                      <Button 
+                        variant="ghost" 
+                        className="text-xs text-gray-400 hover:text-gray-600"
+                        onClick={() => {
+                          if (window.confirm("Deseja realmente cancelar a operação atual? Isso pode deixar os dados incompletos.")) {
+                            setIsImporting(false);
+                            setIsDeleting(false);
+                            setImportProgress({ current: 0, total: 0, status: '', error: null, stats: null });
+                            window.location.reload();
+                          }
+                        }}
+                      >
+                        Cancelar Operação
+                      </Button>
+                    </div>
                   </div>
                 )}
               </Card>
@@ -1114,7 +1210,7 @@ export default function App() {
                           onClick={async () => {
                             if (window.confirm("Deseja gerar dados de teste para visualizar o sistema?")) {
                               setIsImporting(true);
-                              setImportProgress({ current: 0, total: 100, status: 'Gerando dados de teste...', error: null });
+                              setImportProgress({ current: 0, total: 100, status: 'Gerando dados de teste...', error: null, stats: null });
                               try {
                                 await seedDatabase();
                                 setIsImporting(false);
@@ -1544,35 +1640,43 @@ const NavItem = React.memo(({ icon, label, active, onClick, collapsed }: any) =>
   return (
     <button 
       onClick={onClick}
-      className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${
+      className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all duration-200 ${
         active 
-          ? 'bg-gray-900 text-white shadow-lg shadow-gray-900/10' 
-          : 'text-gray-500 hover:bg-gray-100'
+          ? 'bg-brand-50 text-brand-700 shadow-sm shadow-brand-50' 
+          : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
       }`}
     >
-      {icon}
-      {!collapsed && <span className="font-medium">{label}</span>}
+      <div className={`${active ? 'text-brand-600' : 'text-slate-400'}`}>
+        {icon}
+      </div>
+      {!collapsed && <span className="font-bold text-sm">{label}</span>}
     </button>
   );
 });
 
 const StatCard = React.memo(({ title, value, icon, trend, color = "gray" }: any) => {
   const colors: any = {
-    gray: "bg-blue-50 text-blue-600",
+    gray: "bg-brand-50 text-brand-600",
     emerald: "bg-emerald-50 text-emerald-600",
     red: "bg-red-50 text-red-600",
     amber: "bg-amber-50 text-amber-600"
   };
   return (
     <Card className="p-6">
-      <div className="flex justify-between items-start mb-4">
-        <div className={`p-3 rounded-xl ${colors[color]}`}>
+      <div className="flex justify-between items-start mb-6">
+        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-sm ${colors[color]}`}>
           {icon}
         </div>
-        {trend && <span className="text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">{trend}</span>}
+        {trend && (
+          <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase tracking-widest">
+            {trend}
+          </span>
+        )}
       </div>
-      <p className="text-sm text-gray-500 font-medium mb-1">{title}</p>
-      <h4 className="text-3xl font-bold text-gray-900">{value}</h4>
+      <div>
+        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{title}</p>
+        <h4 className="text-3xl font-black text-slate-900 tracking-tighter">{value}</h4>
+      </div>
     </Card>
   );
 });
@@ -1599,55 +1703,58 @@ function Calendar({ appointments }: { appointments: Appointment[] }) {
   }, [currentDate, appointments]);
 
   return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between mb-8">
+    <Card className="p-8">
+      <div className="flex items-center justify-between mb-10">
         <div>
-          <h3 className="text-xl font-bold text-gray-900">
+          <h3 className="text-2xl font-black text-slate-900 tracking-tighter capitalize">
             {format(currentDate, "MMMM yyyy", { locale: ptBR })}
           </h3>
-          <p className="text-sm text-gray-500">Visualize sua rotina mensal</p>
+          <p className="text-xs font-bold text-brand-600 uppercase tracking-widest mt-1">Planejamento de Campo</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-2 hover:bg-gray-100 rounded-lg border border-gray-200">
+          <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-2.5 hover:bg-slate-50 rounded-xl border border-slate-200 text-slate-400 transition-colors">
             <ChevronLeft size={20} />
           </button>
-          <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-2 hover:bg-gray-100 rounded-lg border border-gray-200">
+          <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-2.5 hover:bg-slate-50 rounded-xl border border-slate-200 text-slate-400 transition-colors">
             <ChevronRight size={20} />
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-7 gap-px bg-gray-100 rounded-xl overflow-hidden border border-gray-100">
+      <div className="grid grid-cols-7 gap-px bg-slate-100 rounded-2xl overflow-hidden border border-slate-100 shadow-sm">
         {['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map(day => (
-          <div key={day} className="bg-gray-50 p-4 text-center text-xs font-bold text-gray-400 uppercase tracking-wider">
+          <div key={day} className="bg-slate-50/50 p-4 text-center text-[10px] font-black text-slate-400 uppercase tracking-widest">
             {day}
           </div>
         ))}
         {days.map((day, i) => {
           const dateKey = format(day, 'yyyy-MM-dd');
           const dayAppointments = appointmentsByDate[dateKey] || [];
+          const isCurrentMonth = day.getMonth() === monthStart.getMonth();
           return (
             <div 
               key={i} 
-              className={`bg-white min-h-[120px] p-2 transition-all hover:bg-gray-50 cursor-pointer ${
-                !isSameDay(day, monthStart) && day.getMonth() !== monthStart.getMonth() ? 'opacity-30' : ''
+              className={`bg-white min-h-[140px] p-3 transition-all hover:bg-slate-50/50 group cursor-pointer ${
+                !isCurrentMonth ? 'bg-slate-50/20 opacity-40' : ''
               }`}
             >
-              <div className="flex justify-between items-center mb-2">
-                <span className={`text-sm font-semibold w-7 h-7 flex items-center justify-center rounded-full ${
-                  isToday(day) ? 'bg-gray-900 text-white' : 'text-gray-700'
+              <div className="flex justify-between items-center mb-3">
+                <span className={`text-xs font-black w-8 h-8 flex items-center justify-center rounded-xl transition-all ${
+                  isToday(day) 
+                    ? 'bg-brand-600 text-white shadow-lg shadow-brand-100 scale-110' 
+                    : 'text-slate-900 group-hover:bg-slate-100'
                 }`}>
                   {format(day, 'd')}
                 </span>
               </div>
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 {dayAppointments.slice(0, 3).map(a => (
-                  <div key={a.id} className="text-[10px] p-1 bg-gray-100 rounded border-l-2 border-gray-900 truncate font-medium">
+                  <div key={a.id} className="text-[9px] p-1.5 bg-slate-50 rounded-lg border-l-2 border-brand-600 truncate font-bold text-slate-700 shadow-sm">
                     {a.title}
                   </div>
                 ))}
                 {dayAppointments.length > 3 && (
-                  <div className="text-[10px] text-gray-400 text-center font-medium">
+                  <div className="text-[9px] font-black text-brand-600 text-center mt-1 uppercase tracking-widest">
                     + {dayAppointments.length - 3} mais
                   </div>
                 )}

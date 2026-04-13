@@ -1,4 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-brand-50: #f0f7ff;
+  --color-brand-100: #e0effe;
+  --color-brand-200: #bae0fd;
+  --color-brand-300: #7cc8fb;
+  --color-brand-400: #38abf8;
+  --color-brand-500: #0e91e9;
+  --color-brand-600: #0274c7;
+  --color-brand-700: #035ca1;
+  --color-brand-800: #074e85;
+  --color-brand-900: #0c426e;
+  --color-brand-950: #082a4a;
+}
+
+@layer base {
+  body {
+    @apply bg-[#F8F9FA] text-slate-900 antialiased selection:bg-brand-100 selection:text-brand-900;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply tracking-tight font-bold;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-sm;
+  }
+  
+  .data-grid-row {
+    @apply transition-all duration-200 hover:bg-slate-50 border-b border-slate-100;
+  }
+  
+  .status-pill {
+    @apply px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest;
+  }
+  
+  .bento-card {
+    @apply bg-white rounded-3xl p-6 border border-slate-100 shadow-sm hover:shadow-md transition-shadow duration-300;
+  }
+}
 
 @layer utilities {
   /* Webkit (Chrome, Safari, Edge) */

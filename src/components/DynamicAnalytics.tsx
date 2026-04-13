@@ -17,7 +17,7 @@ import {
 import { BarChart3, PieChart, LineChart, Table, Download, ChevronDown } from 'lucide-react';
 
 const Card = ({ children, className = "" }: { children: React.ReactNode, className?: string }) => (
-  <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden ${className}`}>
+  <div className={`bento-card overflow-hidden ${className}`}>
     {children}
   </div>
 );
